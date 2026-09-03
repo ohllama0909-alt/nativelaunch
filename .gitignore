@@ -6,7 +6,7 @@ logs/
 
 # Runtime state & secrets — never commit
 system_data/
-bots/
+/bots/
 config/proxies.txt
 config/aliases.json
 .env
