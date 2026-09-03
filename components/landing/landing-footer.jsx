@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import Image from 'next/image';
 import { ArrowUpRight } from 'lucide-react';
 import { Reveal, Marquee } from '@/components/reveal';
 
@@ -86,7 +87,7 @@ export function LandingFooter() {
         <div className="grid gap-12 sm:grid-cols-2 lg:grid-cols-[1.4fr_repeat(3,1fr)]">
           <div>
             <div className="flex items-center gap-2.5">
-              <span className="flex h-8 w-8 items-center justify-center rounded-[10px] bg-white text-[12px] font-bold text-black">NL</span>
+              <span className="flex h-8 w-8 items-center justify-center rounded-[10px] border border-white/12 bg-white/[0.05] p-1.5"><Image src="/nativelaunch-logo.png" alt="NativeLaunch" width={24} height={24} className="h-full w-full object-contain" /></span>
               <span className="text-[14px] font-medium tracking-[-0.02em] text-white">NativeLaunch</span>
             </div>
             <p className="mt-5 max-w-xs text-[13px] leading-relaxed text-white/35">

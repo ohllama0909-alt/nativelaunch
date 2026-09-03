@@ -80,7 +80,7 @@ export function Panel({ children, className }) {
   return <section className={cn('panel-surface', className)}>{children}</section>;
 }
 
-export function StatCard({ label, value, hint, icon: Icon, tone = 'default' }) {
+export function StatCard({ label, value, hint, icon, tone = 'default' }) {
   const dots = {
     default: 'bg-white/25',
     blue: 'bg-white/70',
@@ -99,9 +99,9 @@ export function StatCard({ label, value, hint, icon: Icon, tone = 'default' }) {
         <p className="tnum mt-3.5 text-[32px] font-semibold leading-none tracking-[-0.045em] text-white">{value}</p>
         {hint && <p className="mt-2.5 truncate text-xs text-white/35">{hint}</p>}
       </div>
-      {Icon && (
+      {icon && (
         <span className="shrink-0 rounded-xl border border-white/[0.09] bg-white/[0.04] p-2.5 text-white/40 transition-all duration-500 [transition-timing-function:var(--ease-ios)] group-hover:border-white/20 group-hover:text-white">
-          <Icon className="h-[18px] w-[18px]" />
+          {icon}
         </span>
       )}
     </Panel>
@@ -132,12 +132,12 @@ export function StatusBadge({ status }) {
   );
 }
 
-export function EmptyState({ icon: Icon, title, description, action }) {
+export function EmptyState({ icon, title, description, action }) {
   return (
     <div className="anim-fade flex min-h-64 flex-col items-center justify-center px-6 py-16 text-center">
-      {Icon && (
+      {icon && (
         <div className="anim-float mb-6 rounded-2xl border border-white/10 bg-white/[0.04] p-4 text-white/35 backdrop-blur-xl">
-          <Icon className="h-6 w-6" />
+          {icon}
         </div>
       )}
       <h3 className="text-[17px] font-medium tracking-[-0.02em] text-white">{title}</h3>
@@ -231,11 +231,14 @@ export function Tabs({ items, value, onChange }) {
 }
 
 export function Checkbox({ checked, onChange, label, description, disabled }) {
+  const compact = !label && !description;
   return (
     <label
+      aria-label={compact ? 'Select row' : undefined}
       className={cn(
-        'flex cursor-pointer items-start gap-3 rounded-xl border p-3.5 transition-all duration-300 [transition-timing-function:var(--ease-ios)]',
-        checked ? 'border-white/25 bg-white/[0.07]' : 'border-white/[0.08] bg-white/[0.02]',
+        'flex cursor-pointer items-start transition-all duration-300 [transition-timing-function:var(--ease-ios)]',
+        compact ? 'inline-flex rounded-md border-transparent p-0.5' : 'gap-3 rounded-xl border p-3.5',
+        !compact && (checked ? 'border-white/25 bg-white/[0.07]' : 'border-white/[0.08] bg-white/[0.02]'),
         disabled ? 'cursor-not-allowed opacity-40' : 'hover:border-white/20 hover:bg-white/[0.06]'
       )}
     >
@@ -256,10 +259,10 @@ export function Checkbox({ checked, onChange, label, description, disabled }) {
         disabled={disabled}
         className="sr-only"
       />
-      <span className="min-w-0">
+      {!compact && <span className="min-w-0">
         <span className="block text-[13px] font-medium text-white/90">{label}</span>
         {description && <span className="mt-1 block text-xs leading-relaxed text-white/35">{description}</span>}
-      </span>
+      </span>}
     </label>
   );
 }

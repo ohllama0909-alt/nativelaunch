@@ -37,8 +37,10 @@ function AuthProvider({ children }) {
     const unauthorized = () => setUser(null);
     window.addEventListener('nativelaunch:unauthorized', unauthorized);
     window.addEventListener('bothive:unauthorized', unauthorized);
-    return () => window.removeEventListener('nativelaunch:unauthorized', unauthorized);
+    return () => {
+      window.removeEventListener('nativelaunch:unauthorized', unauthorized);
       window.removeEventListener('bothive:unauthorized', unauthorized);
+    };
   }, []);
 
   const login = useCallback(async (email, password) => {

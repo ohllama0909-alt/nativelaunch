@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import Image from 'next/image';
 import { useEffect, useState } from 'react';
 import { ArrowUpRight, Menu, X } from 'lucide-react';
 import { cn } from '@/lib/api';
@@ -35,8 +36,8 @@ export function LandingNav() {
           )}
         >
           <Link href="/" className="group flex items-center gap-2.5 pl-1.5">
-            <span className="flex h-8 w-8 items-center justify-center rounded-[10px] bg-white text-[12px] font-bold text-black transition-transform duration-500 [transition-timing-function:var(--ease-ios)] group-hover:rotate-[-8deg]">
-              BH
+            <span className="flex h-8 w-8 items-center justify-center rounded-[10px] border border-white/12 bg-white/[0.05] p-1.5 transition-transform duration-500 [transition-timing-function:var(--ease-ios)] group-hover:rotate-[-8deg]">
+              <Image src="/nativelaunch-logo.png" alt="NativeLaunch" width={24} height={24} className="h-full w-full object-contain" priority />
             </span>
             <span className="text-[14px] font-medium tracking-[-0.02em] text-white">NativeLaunch</span>
           </Link>

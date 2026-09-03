@@ -379,6 +379,12 @@ body::after {
 .hairline { border-top: 1px solid var(--edge-1); }
 .text-balance { text-wrap: balance; }
 
+/* Workspace density is persisted by the control service. Compact mode keeps
+   all controls touch-safe while fitting more operational rows on screen. */
+.dashboard-compact .data-table tbody td { padding-top: 10px; padding-bottom: 10px; }
+.dashboard-compact main .panel-surface { --radius-ios: 15px; }
+.dashboard-compact main { font-size: 0.96em; }
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;

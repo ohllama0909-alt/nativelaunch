@@ -2,6 +2,8 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
+import Image from 'next/image';
 import { ArrowRight, ArrowLeft, LockKeyhole, UserRound, CheckCircle2, LogOut } from 'lucide-react';
 import { useAuth } from '@/components/providers';
 import { Button } from '@/components/ui';
@@ -15,6 +17,7 @@ const STATS = [
 
 export default function LoginPage() {
   const { user, loading, login, logout } = useAuth();
+  const router = useRouter();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -25,7 +28,9 @@ export default function LoginPage() {
     setError('');
     setSubmitting(true);
     try {
-      await login(email.trim(), password);
+      const nextUser = await login(email.trim(), password);
+      const routes = { proxies: '/network', commands: '/activity', account: '/settings' };
+      router.push(routes[nextUser?.preferences?.startPage] || `/${nextUser?.preferences?.startPage || 'overview'}`);
     } catch (reason) {
       setError(reason.message);
     } finally {
@@ -41,7 +46,7 @@ export default function LoginPage() {
         <div className="spotlight pointer-events-none absolute inset-x-0 top-0 h-[520px]" />
 
         <Link href="/" className="relative flex items-center gap-3">
-          <span className="flex h-10 w-10 items-center justify-center rounded-[12px] bg-white text-[13px] font-bold text-black">NL</span>
+          <span className="flex h-10 w-10 items-center justify-center rounded-[12px] border border-white/12 bg-white/[0.05] p-2"><Image src="/nativelaunch-logo.png" alt="NativeLaunch" width={28} height={28} className="h-full w-full object-contain" priority /></span>
           <div>
             <strong className="block text-[15px] font-medium tracking-[-0.02em] text-white">NativeLaunch</strong>
             <span className="text-[9px] uppercase tracking-[0.19em] text-white/30">Control plane</span>
@@ -96,7 +101,7 @@ export default function LoginPage() {
             </Link>
 
             <div className="mb-8">
-              <span className="flex h-11 w-11 items-center justify-center rounded-[13px] bg-white font-bold text-black">NL</span>
+              <span className="flex h-11 w-11 items-center justify-center rounded-[13px] border border-white/12 bg-white/[0.05] p-2"><Image src="/nativelaunch-logo.png" alt="NativeLaunch" width={30} height={30} className="h-full w-full object-contain" /></span>
             </div>
 
             <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.05] px-3 py-1 text-xs text-white/70">
@@ -110,10 +115,10 @@ export default function LoginPage() {
 
             <div className="mt-8 space-y-3">
               <Link
-                href="/"
+                href="/overview"
                 className="sheen inline-flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-white text-[13px] font-medium text-black transition-all duration-300 hover:bg-white/90 active:scale-95"
               >
-                Return to home <ArrowRight className="h-4 w-4" />
+                Open workspace <ArrowRight className="h-4 w-4" />
               </Link>
               <Button
                 type="button"
@@ -133,7 +138,7 @@ export default function LoginPage() {
             </Link>
 
             <div className="mb-8 lg:hidden">
-              <span className="flex h-11 w-11 items-center justify-center rounded-[13px] bg-white font-bold text-black">NL</span>
+              <span className="flex h-11 w-11 items-center justify-center rounded-[13px] border border-white/12 bg-white/[0.05] p-2"><Image src="/nativelaunch-logo.png" alt="NativeLaunch" width={30} height={30} className="h-full w-full object-contain" /></span>
             </div>
 
             <h2 className="display text-[34px] text-white">Sign in</h2>

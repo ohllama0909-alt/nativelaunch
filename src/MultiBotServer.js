@@ -268,6 +268,8 @@ const { UserStore } = require('./utils/UserStore.js');
 const users = new UserStore();
 const { ProxyStore, toUri: proxyToUri, toLabel: proxyToLabel } = require('./utils/ProxyStore.js');
 const proxies = new ProxyStore();
+const { UsernameGenerator } = require('./utils/UsernameGenerator.js');
+const usernameGenerator = new UsernameGenerator();
 const { WorkspaceStore, normalizeScript } = require('./utils/WorkspaceStore.js');
 const workspaces = new WorkspaceStore();
 
@@ -918,11 +920,13 @@ function publicBot(bot, user = null) {
     const s = getBotState(bot.id);
     const owner = bot.ownerId ? users.findById(bot.ownerId) : null;
     const base = {
-        id: bot.id, config: bot.config, status: s.status, pid: s.proc?.pid || null,
+        id: bot.id, config: { ...(bot.config || {}) }, status: s.status, pid: s.proc?.pid || null,
         hasInventory: !!s.inventory, shards: s.shards,
         ownerId: bot.ownerId || null,
         ownerLabel: user && user.role === 'admin' ? (owner ? owner.email : null) : null
     };
+    const proxyRecord = base.config.proxy ? proxies.findByUri(base.config.proxy) : null;
+    if (proxyRecord && (!user || proxies.canAccess(user, proxyRecord))) base.config.proxyId = proxyRecord.id;
     if (user && user.role !== 'admin') {
         // Tenants can operate their bot without receiving stored credentials.
         base.config = { ...base.config };
@@ -953,7 +957,15 @@ async function handleHttp(req, res, state) {
 
     if (p.startsWith('/api/') && ['POST', 'PATCH', 'DELETE'].includes(req.method) && req.headers.origin) {
         try {
-            if (new URL(req.headers.origin).host !== req.headers.host) {
+            const originHost = new URL(req.headers.origin).host;
+            // Reverse proxies (including the Next.js development rewrite) may
+            // dial the API with their upstream Host while preserving the
+            // browser-facing host in X-Forwarded-Host. Accept either exact
+            // host; browsers cannot forge this header themselves.
+            const forwardedHosts = String(req.headers['x-forwarded-host'] || '')
+                .split(',').map(value => value.trim()).filter(Boolean);
+            const allowedHosts = new Set([req.headers.host, ...forwardedHosts].filter(Boolean));
+            if (!allowedHosts.has(originHost)) {
                 return json(res, 403, { ok: false, reason: 'Cross-origin request blocked' });
             }
         } catch (_) { return json(res, 403, { ok: false, reason: 'Invalid request origin' }); }
@@ -1009,6 +1021,23 @@ async function handleHttp(req, res, state) {
     // Protect all other /api routes
     if (p.startsWith('/api/') && !isAuthenticated(req)) {
         return json(res, 401, { ok: false, reason: 'Unauthorized' });
+    }
+
+    if (req.method === 'POST' && p === '/api/usernames/generate') {
+        const user = currentUser(req);
+        try {
+            const suggestion = await usernameGenerator.generate({
+                ownerId: user.id,
+                excluded: (state.bots || []).map(bot => bot.config && bot.config.username)
+            });
+            return json(res, 200, { ok: true, ...suggestion });
+        } catch (error) {
+            const unavailable = ['UPSTREAM_RATE_LIMIT', 'UPSTREAM_UNAVAILABLE', 'UPSTREAM_INVALID'].includes(error.code);
+            return json(res, unavailable ? 503 : 409, {
+                ok: false,
+                reason: error.message || 'Could not generate a username right now'
+            });
+        }
     }
 
     // ── Account workspace ───────────────────────────────────────────
@@ -1536,6 +1565,14 @@ async function handleHttp(req, res, state) {
         if (state.bots.some(b => b.id === id)) {
             return json(res, 400, { ok: false, reason: 'Bot ID already exists' });
         }
+        const requestedUsername = String(body.username || id).trim();
+        if (!/^[A-Za-z0-9_]{3,16}$/.test(requestedUsername)) {
+            return json(res, 400, { ok: false, reason: 'Minecraft usernames must be 3-16 letters, numbers, or underscores' });
+        }
+        if (state.bots.some(bot => String(bot.config && bot.config.username).toLowerCase() === requestedUsername.toLowerCase())) {
+            return json(res, 409, { ok: false, reason: 'That Minecraft username is already used by another bot' });
+        }
+        body.username = requestedUsername;
         let ownerId = user.id;
         if (user.role === 'admin' && body.ownerId) {
             if (!users.findById(body.ownerId)) return json(res, 400, { ok: false, reason: 'Unknown owner' });
@@ -1546,6 +1583,10 @@ async function handleHttp(req, res, state) {
             const rec = proxies.get(String(body.proxyId));
             if (!rec || (user.role !== 'admin' && rec.owner !== user.id) || (user.role === 'admin' && rec.owner && rec.owner !== ownerId)) {
                 return json(res, 400, { ok: false, reason: 'Proxy is not available to this account' });
+            }
+            const key = `${String(rec.host).toLowerCase()}:${rec.port}`;
+            if ((proxyAssignments(state).get(key) || []).length >= PROXY_MAX_BOTS) {
+                return json(res, 409, { ok: false, reason: 'That proxy has no slots left. Pick another endpoint.' });
             }
             body.proxy = proxyToUri(rec);
         }
@@ -1561,6 +1602,7 @@ async function handleHttp(req, res, state) {
 
         const bot = { id, ownerId, config };
         state.bots.push(bot);
+        try { usernameGenerator.reserve(config.username, ownerId, { source: 'bot-created' }); } catch (_) { }
         saveBotsFile(state);
         broadcastGlobal(viewer => ({ type: 'bot-added', bot: publicBot(bot, viewer) }), state);
         return json(res, 200, { ok: true, bot: publicBot(bot, user) });
