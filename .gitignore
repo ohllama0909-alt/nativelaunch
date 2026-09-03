@@ -1,0 +1,19 @@
+node_modules/
+.next/
+out/
+logs/
+*.log
+
+# Runtime state & secrets — never commit
+system_data/
+bots/
+config/proxies.txt
+config/aliases.json
+.env
+.env.*
+!.env.example
+*.env
+credentials.json
+*.pem
+*.key
+.credentials

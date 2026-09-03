@@ -1,0 +1,36 @@
+{
+  "name": "nativelaunch",
+  "version": "4.0.0",
+  "description": "Multi-tenant Minecraft bot hosting control panel",
+  "main": "index.js",
+  "scripts": {
+    "start": "node start-panel.js",
+    "start:bot": "node index.js",
+    "dev:web": "next dev -H 127.0.0.1 -p 3318",
+    "build:web": "next build",
+    "start:web": "next start -H 127.0.0.1 -p 3318",
+    "check:backend": "find src -name '*.js' -type f -print0 | xargs -0 -n1 node --check && node --check index.js && node --check start-panel.js",
+    "check:web": "next build",
+    "check": "npm run check:backend && npm run check:web"
+  },
+  "dependencies": {
+    "chalk": "^4.1.2",
+    "discord.js": "^14.14.1",
+    "figlet": "^1.7.0",
+    "lucide-react": "^1.31.0",
+    "mineflayer": "^4.20.1",
+    "mineflayer-auto-eat": "^5.0.3",
+    "mineflayer-pathfinder": "^2.4.5",
+    "next": "^16.3.1",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "socks": "^2.8.9",
+    "vec3": "^0.1.10"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.3",
+    "autoprefixer": "^10.5.4",
+    "postcss": "^8.5.26",
+    "tailwindcss": "^4.3.3"
+  }
+}

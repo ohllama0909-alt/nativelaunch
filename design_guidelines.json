@@ -1,0 +1,111 @@
+{
+  "theme": "dark",
+  "app_type": "vanilla_single_file_spa",
+  "design_philosophy": "Tactical Command Center. High-density, high-contrast, technical, and stable. Rejects the soft 'SaaS' aesthetic in favor of a hard-edged, data-first terminal vibe with stark structural greys and vivid kinetic trigger colors (Volt Yellow & Neon Cyan) to signify a powerful, real-time bot fleet control system.",
+  "typography": {
+    "google_fonts_cdn": "https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700;800&family=Outfit:wght@300;400;500;600;700;900&display=swap",
+    "primary_heading": {
+      "family": "'Outfit', sans-serif",
+      "description": "Used for all panel headers, bot names, global stat numbers, and primary UI navigation.",
+      "weight_usage": "SemiBold (600) for standard headers, Black (900) tracking-tight for massive stat counters."
+    },
+    "secondary_body_data": {
+      "family": "'JetBrains Mono', monospace",
+      "description": "Used for ALL dynamic data: console logs, stats, IP:ports, shard counts, form inputs, and status labels. Enhances the technical/terminal aesthetic.",
+      "weight_usage": "Regular (400) for body, Bold (700) for active statuses."
+    },
+    "scale": {
+      "h1": "2.5rem (40px) - tracking-tight, leading-none",
+      "h2": "1.75rem (28px)",
+      "h3": "1.25rem (20px)",
+      "body": "0.875rem (14px) - optimal for dense data tables",
+      "small": "0.75rem (12px) - uppercase, tracking-[0.15em] for labels"
+    }
+  },
+  "colors": {
+    "css_variables": {
+      "--bg-void": "#050507",
+      "--bg-surface": "#0C0C0F",
+      "--bg-surface-hover": "#141419",
+      "--border-dim": "#1C1C21",
+      "--border-focus": "#383842",
+      "--text-primary": "#F2F2F2",
+      "--text-secondary": "#8B8B99",
+      "--text-muted": "#5A5A66",
+      "--brand-kinetic": "#D4FF00",
+      "--brand-kinetic-glow": "rgba(212, 255, 0, 0.15)",
+      "--status-online": "#00FFA3",
+      "--status-offline": "#FF3366",
+      "--status-warning": "#FFD500",
+      "--status-info": "#00F2FE",
+      "--glass-bg": "rgba(12, 12, 15, 0.7)",
+      "--glass-border": "rgba(255, 255, 255, 0.08)"
+    },
+    "usage_rules": {
+      "background": "Never use pure black. Use --bg-void for the main app background, --bg-surface for cards/tiles.",
+      "kinetic_accent": "Use --brand-kinetic sparingly for active states, selected tabs, and primary CTAs. It should pop aggressively against the dark background."
+    }
+  },
+  "visual_enhancers": {
+    "borders": "Strictly 1px solid --border-dim. No soft muddy shadows. Use sharp or very slightly rounded corners (border-radius: 4px for inputs, 8px for cards).",
+    "shadows": {
+      "ambient": "0 4px 24px rgba(0, 0, 0, 0.4)",
+      "glow_kinetic": "0 0 12px var(--brand-kinetic-glow)",
+      "glow_online": "0 0 10px rgba(0, 255, 163, 0.2)"
+    },
+    "glassmorphism": "Used ONLY for fixed/sticky headers, the mobile bottom nav bar, and the Command Palette overlay. Requires backdrop-filter: blur(12px) and a 1px inner top border."
+  },
+  "layouts": {
+    "app_shell": "CSS Grid layout. Desktop: Left sidebar (icon nav) + Main content area. Mobile: Top header (global stats) + Main content + Fixed Bottom Navigation Bar.",
+    "fleet_grid": "Bento-style CSS Grid. Responsive: grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)). Gap: 16px (Dense mode: 8px).",
+    "inventory_grid": "Minecraft-accurate proportions. grid-template-columns: repeat(9, 1fr). Each slot is aspect-ratio 1/1, bg-surface-hover, inset shadow.",
+    "detail_panel": "Split view or modal overlay for Bot Details. Top: Tab strip. Bottom: Content area. Console tab must fill available vertical space with overflow-y-auto."
+  },
+  "components": {
+    "bot_tile": {
+      "structure": "Header (Drag Handle, Name, Status Dot), Body (Monospace stats: Uptime, Shards, Host), Footer (Start/Stop/Restart tiny icon buttons).",
+      "interaction": "Hover: border changes to --border-focus, slight transform translateY(-1px). Dragging state: opacity 0.8, glowing border.",
+      "status_dot": "8x8px circle. Online: box-shadow glow. Offline: muted red, no glow."
+    },
+    "console_terminal": {
+      "style": "Font: JetBrains Mono. Background: #000000. Text: #CCCCCC. Padding: 16px. Custom scrollbar (2px wide, kinetic color thumb). Log levels colorized (INFO: cyan, WARN: yellow, ERR: red)."
+    },
+    "command_palette": {
+      "style": "Fixed inset-0, z-index: 100. Background: rgba(0,0,0,0.6) backdrop-blur-md. Center modal: 600px wide, 1px border --border-focus, box-shadow ambient. Input: massive text, no border, JetBrains Mono."
+    },
+    "mobile_bottom_nav": {
+      "style": "Fixed bottom-0, w-full, z-index: 50. background: var(--glass-bg), backdrop-filter: blur(16px), border-top: 1px solid var(--glass-border). Flex space-around, padding 12px. Phosphor icons."
+    },
+    "mass_command_runner": {
+      "style": "A command strip fixed at the top of the Commands page. Input field + Target selector (All/Category) + 'Execute' button with a Volt Yellow background and black text for stark contrast."
+    }
+  },
+  "motion": {
+    "transitions": "Never use 'transition: all'. Use specific properties. e.g., 'transition: border-color 0.2s ease, transform 0.2s ease'.",
+    "drag_drop": "Use SortableJS animation option (animation: 150) for fluid reordering."
+  },
+  "libraries_and_cdns": {
+    "icons": "<script src=\"https://unpkg.com/@phosphor-icons/web\"></script> (Use 'ph' and 'ph-fill' classes)",
+    "drag_and_drop": "<script src=\"https://cdn.jsdelivr.net/npm/sortablejs@latest/Sortable.min.js\"></script>"
+  },
+  "instructions_to_main_agent": [
+    "STRICT CONSTRAINT: Build this as a SINGLE-FILE vanilla HTML app (multibot.html). ALL CSS goes in <style>, ALL JS in <script> at the bottom.",
+    "NO REACT, NO VUE, NO BUILD STEPS. Vanilla JS DOM manipulation only.",
+    "Implement the tile drag-and-drop reordering using SortableJS (linked via CDN) and save the layout array to localStorage.",
+    "For Real-Time updates (SSE), implement a mock EventSource in vanilla JS that randomly updates bot tile stats and console logs every few seconds to simulate live data.",
+    "Implement the Command Palette (Ctrl+K) using a vanilla JS event listener on document keydown.",
+    "Build the UI Mobile-First. The bottom navigation bar MUST only appear on screens < 768px, hiding the desktop sidebar.",
+    "Minecraft Inventory Grid must be accurately rendered (9 columns, 3 rows for main, 1 row for hotbar separated by a margin)."
+  ],
+  "accessibility_and_testing": {
+    "data_testid": "MANDATORY: Add data-testid attributes to ALL interactive elements (e.g., data-testid='bot-tile-1', data-testid='cmd-palette-input', data-testid='start-bot-btn').",
+    "contrast": "Ensure text against --bg-surface meets 4.5:1 ratio. --text-muted should only be used for non-essential visual labels."
+  },
+  "universal_guidelines": [
+    "Avoid generic centered layouts. Left-align data for scannability.",
+    "Create depth through layered design elements with z-index hierarchy.",
+    "Never use emoji characters (🤖, etc.) for UI icons. Use Phosphor Icons.",
+    "DO NOT apply universal transitions (transition: all).",
+    "Do not use complete transparent backgrounds for overlays or headers. Use --glass-bg with backdrop-filter."
+  ]
+}

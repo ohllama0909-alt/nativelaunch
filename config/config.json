@@ -1,0 +1,60 @@
+{
+  "host": "play.bananasmp.net",
+  "port": 25565,
+  "username": "",
+  "version": "1.20.1",
+  "auth": "offline",
+  "autoReconnect": true,
+  "reconnectDelay": 5000,
+  "afkMode": true,
+  "clientProfile": {
+    "brand": "vanilla",
+    "locale": "en_us",
+    "viewDistance": 8,
+    "chat": "enabled",
+    "chatColors": true,
+    "skinParts": {
+      "showCape": true,
+      "showJacket": true,
+      "showLeftSleeve": true,
+      "showRightSleeve": true,
+      "showLeftPants": true,
+      "showRightPants": true,
+      "showHat": true
+    },
+    "mainHand": "right",
+    "enableTextFiltering": false,
+    "enableServerListing": true
+  },
+  "limboFreeze": {
+    "enabled": true,
+    "physicsMode": "auto",
+    "endOnSpawn": false,
+    "endOnKick": true,
+    "maxFreezeMs": 30000,
+    "freezeDurationMs": 8000
+  },
+  "colors": {
+    "theme": "green"
+  },
+  "discord": {
+    "enabled": false,
+    "token": "",
+    "guildId": ""
+  },
+  "boneCollector": {
+    "collectSlot": 13,
+    "cycleDelay": 15000
+  },
+  "chatGames": {
+    "enabled": false,
+    "startSec": 4.1,
+    "stepSec": 0.3,
+    "maxSec": 6,
+    "jitterSec": 0.09,
+    "longWordLetters": 10,
+    "longWordBonusSec": 1,
+    "spamStartDelayMs": 1000,
+    "spamGapMs": 1000
+  }
+}
