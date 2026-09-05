@@ -21,6 +21,7 @@ import {
 } from 'lucide-react';
 import { useAuth, useToast } from '@/components/providers';
 import { Spinner } from '@/components/ui';
+import { FloatingIndicator } from '@/components/floating-indicator';
 import { api, cn } from '@/lib/api';
 
 const NAV = [
@@ -144,7 +145,7 @@ export function DashboardShell({ children }) {
 
   return (
     <div className="min-h-screen">
-      <aside className="fixed inset-y-0 left-0 z-40 hidden w-60 border-r border-white/[0.07] bg-black/60 px-4 py-6 backdrop-blur-xl lg:block">
+      <aside className="fixed inset-y-0 left-0 z-40 hidden w-60 overflow-y-auto border-r border-white/[0.07] bg-black/60 px-4 py-6 backdrop-blur-xl lg:block console-scrollbar">
         {sidebar}
       </aside>
 
@@ -155,7 +156,7 @@ export function DashboardShell({ children }) {
             onClick={() => setDrawer(false)}
             aria-hidden="true"
           />
-          <aside className="absolute inset-y-0 left-0 w-64 border-r border-white/[0.09] bg-black px-4 py-6 anim-slide-in">
+          <aside className="absolute inset-y-0 left-0 w-64 overflow-y-auto border-r border-white/[0.09] bg-black px-4 py-6 anim-slide-in console-scrollbar">
             <button
               type="button"
               onClick={() => setDrawer(false)}
@@ -177,7 +178,7 @@ export function DashboardShell({ children }) {
             aria-label="Open navigation"
             className="rounded-lg p-2 text-white/50 transition hover:text-white lg:hidden"
           >
-            <Menu className="h-4.5 w-4.5" />
+            <Menu className="h-5 w-5" />
           </button>
 
           <div className="ml-auto flex items-center gap-2">
@@ -198,6 +199,8 @@ export function DashboardShell({ children }) {
           <div className="mx-auto w-full max-w-[1240px]">{children}</div>
         </main>
       </div>
+
+      <FloatingIndicator />
     </div>
   );
 }

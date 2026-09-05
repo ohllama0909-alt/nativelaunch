@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { Activity, Bot, Clock, Network } from 'lucide-react';
+import { Activity, Bot, Clock, Gem, Network } from 'lucide-react';
 import { useAuth } from '@/components/providers';
 import { EmptyState, PageHeader, Panel, Spinner, StatCard, StatusBadge } from '@/components/ui';
 import { ErrorNote, LiveDot, Meter, Pill, SectionTitle } from '@/components/dash-ui';
@@ -47,7 +47,13 @@ export default function OverviewPage() {
         <StatCard
           label="Bots online"
           value={loading ? '--' : `${running.length}/${bots.length}`}
-          hint={bots.length ? `${pct(running.length, bots.length)}% of the roster running` : 'No bots registered yet'}
+          hint={
+            bots.length
+              ? user && user.role !== 'admin'
+                ? `${running.length} running · ${bots.length}/10 quota used`
+                : `${pct(running.length, bots.length)}% of the roster running`
+              : 'No bots registered yet'
+          }
           icon={<Bot className="h-4 w-4" />}
         />
         <StatCard
@@ -100,6 +106,7 @@ export default function OverviewPage() {
                   <tr>
                     <th>Bot</th>
                     <th>Status</th>
+                    <th>Shards</th>
                     <th>Server</th>
                     <th>Egress</th>
                   </tr>
@@ -115,6 +122,16 @@ export default function OverviewPage() {
                       </td>
                       <td>
                         <StatusBadge status={bot.status} />
+                      </td>
+                      <td>
+                        {bot.shards !== null && bot.shards !== undefined ? (
+                          <span className="inline-flex items-center gap-1 font-mono text-xs font-medium text-amber-300">
+                            <Gem className="h-3 w-3 text-amber-400" />
+                            {Number(bot.shards).toLocaleString()}
+                          </span>
+                        ) : (
+                          <span className="font-mono text-xs text-white/20">--</span>
+                        )}
                       </td>
                       <td className="text-white/50">
                         {bot.config ? `${bot.config.host}:${bot.config.port}` : '--'}

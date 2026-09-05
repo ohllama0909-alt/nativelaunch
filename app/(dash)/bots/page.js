@@ -10,10 +10,24 @@
  */
 
 import { useEffect, useMemo, useState } from 'react';
-import { Bot, ChevronDown, Play, Plus, Search, Send, Sparkles, Square } from 'lucide-react';
+import {
+  Bot,
+  Check,
+  CheckSquare,
+  ChevronDown,
+  Gem,
+  Play,
+  Plus,
+  Search,
+  Send,
+  Sparkles,
+  Square,
+  Trash2,
+  X,
+} from 'lucide-react';
 import { useAuth, useToast } from '@/components/providers';
 import { Button, Checkbox, EmptyState, Modal, PageHeader, Spinner } from '@/components/ui';
-import { BotPicker, ErrorNote, Field, Input, LiveDot, Pill, Select } from '@/components/dash-ui';
+import { BotPicker, ConfirmModal, ErrorNote, Field, Input, LiveDot, Pill, Select } from '@/components/dash-ui';
 import { BotWorkspace } from '@/components/bot-workspace';
 import { useFleet, useResource } from '@/lib/hooks';
 import { api, cn } from '@/lib/api';
@@ -33,19 +47,84 @@ const BLANK_BOT = {
   auth: 'offline',
   proxyId: '',
   autoReconnect: true,
-  reconnectDelay: '5000',
+  reconnectDelaySec: '5',
   afkMode: true,
   autoRegister: false,
   autoLogin: false,
   loginPassword: '',
+  startOnCreate: true,
   discordEnabled: false,
   discordToken: '',
   discordGuildId: '',
   webhookUrl: '',
   collectSlot: '13',
-  cycleDelay: '15000',
+  cycleDelaySec: '15',
   ownerId: '',
 };
+
+const LAST_BOT_CONFIG_KEY = 'nativelaunch:last_bot_config';
+
+function loadLastBotConfig() {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = localStorage.getItem(LAST_BOT_CONFIG_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveLastBotConfig(config, lastId) {
+  if (typeof window === 'undefined') return;
+  try {
+    const toSave = {
+      lastId: lastId || config.id || '',
+      category: config.category || '',
+      host: config.host || 'play.bananasmp.net',
+      port: config.port || '25565',
+      version: config.version || '1.20.1',
+      auth: config.auth || 'offline',
+      autoReconnect: config.autoReconnect ?? true,
+      reconnectDelaySec: config.reconnectDelaySec || (config.reconnectDelay ? String(Math.round(Number(config.reconnectDelay) / 1000)) : '5'),
+      afkMode: config.afkMode ?? true,
+      autoRegister: config.autoRegister ?? false,
+      autoLogin: config.autoLogin ?? false,
+      loginPassword: config.loginPassword || '',
+      startOnCreate: config.startOnCreate ?? true,
+      discordEnabled: config.discordEnabled ?? false,
+      discordToken: config.discordToken || '',
+      discordGuildId: config.discordGuildId || '',
+      webhookUrl: config.webhookUrl || '',
+      collectSlot: config.collectSlot || '13',
+      cycleDelaySec: config.cycleDelaySec || (config.cycleDelay ? String(Math.round(Number(config.cycleDelay) / 1000)) : '15'),
+      proxyId: config.proxyId || '',
+    };
+    localStorage.setItem(LAST_BOT_CONFIG_KEY, JSON.stringify(toSave));
+  } catch {}
+}
+
+function getNextBotId(existingBots = [], lastId = '') {
+  const existingIds = new Set((existingBots || []).map((b) => String(b.id).toLowerCase()));
+
+  if (lastId) {
+    const match = String(lastId).match(/^(.*?[-_])?(\d+)$/);
+    if (match) {
+      const prefix = match[1] || 'bot-';
+      const numDigits = match[2].length;
+      let nextNum = parseInt(match[2], 10) + 1;
+      while (existingIds.has(`${prefix}${String(nextNum).padStart(numDigits, '0')}`.toLowerCase())) {
+        nextNum++;
+      }
+      return `${prefix}${String(nextNum).padStart(numDigits, '0')}`;
+    }
+  }
+
+  let n = 1;
+  while (existingIds.has(`bot-${n}`)) {
+    n++;
+  }
+  return `bot-${n}`;
+}
 
 const BOT_ID = /^[a-zA-Z0-9_-]{1,24}$/;
 const MINECRAFT_USERNAME = /^[A-Za-z0-9_]{3,16}$/;
@@ -69,19 +148,43 @@ function egressLabel(bot) {
   return config.proxyId ? 'proxied' : 'direct';
 }
 
+function formatShards(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const num = Number(value);
+  if (Number.isNaN(num)) return String(value);
+  if (num >= 1_000_000_000) {
+    return `${(num / 1_000_000_000).toFixed(2).replace(/\.0+$/, '')}B`;
+  }
+  if (num >= 1_000_000) {
+    return `${(num / 1_000_000).toFixed(2).replace(/\.0+$/, '')}M`;
+  }
+  if (num >= 10_000) {
+    return `${(num / 1_000).toFixed(1).replace(/\.0+$/, '')}k`;
+  }
+  return num.toLocaleString();
+}
+
 export default function BotsPage() {
   const { user } = useAuth();
   const { toast } = useToast();
   const fleet = useFleet();
   const proxies = useResource('/proxies', (result) => result.proxies || []);
   const isAdmin = user.role === 'admin';
+  const atBotLimit = !isAdmin && fleet.bots.length >= 10;
   const owners = useResource(isAdmin ? '/users' : null, (result) => result.users || []);
 
   const [selected, setSelected] = useState('');
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
+  const [mobileTab, setMobileTab] = useState('roster');
   const [collapsed, setCollapsed] = useState(() => new Set());
   const [groupBusy, setGroupBusy] = useState('');
+
+  const [selectMode, setSelectMode] = useState(false);
+  const [checkedBots, setCheckedBots] = useState(() => new Set());
+  const [massDeleteOpen, setMassDeleteOpen] = useState(false);
+  const [massDeleting, setMassDeleting] = useState(false);
+  const [massActionBusy, setMassActionBusy] = useState('');
 
   const [createOpen, setCreateOpen] = useState(false);
   const [form, setForm] = useState(BLANK_BOT);
@@ -91,7 +194,7 @@ export default function BotsPage() {
   const [usernameMeta, setUsernameMeta] = useState(null);
 
   const [castOpen, setCastOpen] = useState(false);
-  const [cast, setCast] = useState({ cmd: '', staggerMs: '250', botIds: [] });
+  const [cast, setCast] = useState({ cmd: '', staggerSec: '0.25', botIds: [] });
   const [casting, setCasting] = useState(false);
 
   const visible = useMemo(() => {
@@ -170,8 +273,128 @@ export default function BotsPage() {
     fleet.reload();
   };
 
+  const toggleBotCheck = (id, force) => {
+    setCheckedBots((current) => {
+      const next = new Set(current);
+      const shouldCheck = typeof force === 'boolean' ? force : !next.has(id);
+      if (shouldCheck) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  };
+
+  const selectAllVisible = (force) => {
+    const allChecked = visible.length > 0 && visible.every((b) => checkedBots.has(b.id));
+    const shouldCheck = typeof force === 'boolean' ? force : !allChecked;
+    setCheckedBots((current) => {
+      const next = new Set(current);
+      if (shouldCheck) {
+        visible.forEach((b) => next.add(b.id));
+      } else {
+        visible.forEach((b) => next.delete(b.id));
+      }
+      return next;
+    });
+  };
+
+  const toggleGroupCheck = (group, force) => {
+    const allInGroupChecked = group.bots.length > 0 && group.bots.every((b) => checkedBots.has(b.id));
+    const shouldCheck = typeof force === 'boolean' ? force : !allInGroupChecked;
+    setCheckedBots((current) => {
+      const next = new Set(current);
+      if (shouldCheck) {
+        group.bots.forEach((b) => next.add(b.id));
+      } else {
+        group.bots.forEach((b) => next.delete(b.id));
+      }
+      return next;
+    });
+  };
+
+  const massDelete = async () => {
+    const ids = Array.from(checkedBots);
+    if (!ids.length) return;
+    setMassDeleting(true);
+    try {
+      const result = await api('/bots', {
+        method: 'DELETE',
+        body: JSON.stringify({ ids }),
+      });
+      const count = result.removed ?? ids.length;
+      toast(`Deleted ${count} bot${count === 1 ? '' : 's'}`, 'success');
+      setCheckedBots(new Set());
+      setMassDeleteOpen(false);
+      setSelectMode(false);
+      if (ids.includes(selected)) {
+        setSelected('');
+      }
+      fleet.reload();
+    } catch (reason) {
+      toast(reason.message, 'error');
+    } finally {
+      setMassDeleting(false);
+    }
+  };
+
+  const massLifecycle = async (action) => {
+    const ids = Array.from(checkedBots);
+    if (!ids.length) return;
+    const targets = fleet.bots.filter(
+      (b) => ids.includes(b.id) && (action === 'start' ? b.status !== 'running' : b.status === 'running')
+    );
+    if (!targets.length) {
+      toast(`None of the selected bots need to be ${action}ed`, 'info');
+      return;
+    }
+    setMassActionBusy(action);
+    try {
+      const results = await Promise.allSettled(
+        targets.map((bot) => api(`/bots/${encodeURIComponent(bot.id)}/${action}`, { method: 'POST' }))
+      );
+      const failed = results.filter((r) => r.status === 'rejected').length;
+      const completed = action === 'stop' ? 'stopped' : 'started';
+      if (failed) {
+        toast(`${targets.length - failed} of ${targets.length} ${completed}`, 'warning');
+      } else {
+        toast(`${targets.length} bot${targets.length === 1 ? '' : 's'} ${completed}`, 'success');
+      }
+      fleet.reload();
+    } catch (reason) {
+      toast(reason.message, 'error');
+    } finally {
+      setMassActionBusy('');
+    }
+  };
+
+  const openCreateModal = () => {
+    const saved = loadLastBotConfig();
+    const nextId = getNextBotId(fleet.bots, saved?.lastId);
+    if (saved) {
+      setForm({
+        ...BLANK_BOT,
+        ...saved,
+        id: nextId,
+        username: '',
+      });
+    } else {
+      setForm({
+        ...BLANK_BOT,
+        id: nextId,
+        username: '',
+      });
+    }
+    setCreateError('');
+    setUsernameMeta(null);
+    setCreateOpen(true);
+  };
+
   const createBot = async () => {
-    const id = form.id.trim();
+    if (atBotLimit) {
+      setCreateError('Bot limit reached: standard accounts can have a maximum of 10 bots.');
+      return;
+    }
+    const saved = loadLastBotConfig();
+    const id = form.id.trim() || getNextBotId(fleet.bots, saved?.lastId);
     if (!BOT_ID.test(id)) {
       setCreateError('Bot ID must be 1-24 characters: letters, numbers, hyphen, or underscore.');
       return;
@@ -190,7 +413,7 @@ export default function BotsPage() {
       version: form.version.trim() || '1.20.1',
       auth: form.auth,
       autoReconnect: form.autoReconnect,
-      reconnectDelay: Number(form.reconnectDelay) || 5000,
+      reconnectDelay: Math.round((Number(form.reconnectDelaySec) || 5) * 1000),
       afkMode: form.afkMode,
       autoRegister: form.autoRegister,
       autoLogin: form.autoLogin,
@@ -202,7 +425,7 @@ export default function BotsPage() {
       },
       boneCollector: {
         collectSlot: Number(form.collectSlot) || 13,
-        cycleDelay: Number(form.cycleDelay) || 15000,
+        cycleDelay: Math.round((Number(form.cycleDelaySec) || 15) * 1000),
       },
     };
     if (form.proxyId) payload.proxyId = form.proxyId;
@@ -213,10 +436,23 @@ export default function BotsPage() {
     setCreateError('');
     try {
       const result = await api('/bots', { method: 'POST', body: JSON.stringify(payload) });
-      toast(`${id} created`, 'success');
+
+      // Save last bot configuration & credentials
+      saveLastBotConfig(form, id);
+
+      // If startOnCreate is selected, start the bot immediately
+      if (form.startOnCreate) {
+        try {
+          await api(`/bots/${encodeURIComponent(id)}/start`, { method: 'POST' });
+          toast(`${id} created and started`, 'success');
+        } catch (startErr) {
+          toast(`${id} created, but failed to start: ${startErr.message}`, 'warning');
+        }
+      } else {
+        toast(`${id} created`, 'success');
+      }
+
       setCreateOpen(false);
-      setForm(BLANK_BOT);
-      setUsernameMeta(null);
       fleet.reload();
       if (result && result.bot) setSelected(result.bot.id);
     } catch (reason) {
@@ -246,12 +482,14 @@ export default function BotsPage() {
     if (!cmd) return;
     setCasting(true);
     try {
-      const body = { cmd, staggerMs: Number(cast.staggerMs) || 0 };
+      const staggerSec = Number(cast.staggerSec);
+      const staggerMs = Number.isFinite(staggerSec) ? Math.max(0, Math.round(staggerSec * 1000)) : 250;
+      const body = { cmd, staggerMs, staggerSec };
       if (cast.botIds.length) body.botIds = cast.botIds;
       const result = await api('/mass-cmd', { method: 'POST', body: JSON.stringify(body) });
       toast(`Queued for ${result.total} bot${result.total === 1 ? '' : 's'}`, 'success');
       setCastOpen(false);
-      setCast({ cmd: '', staggerMs: '250', botIds: [] });
+      setCast({ cmd: '', staggerSec: '0.25', botIds: [] });
     } catch (reason) {
       toast(reason.message, 'error');
     } finally {
@@ -270,19 +508,35 @@ export default function BotsPage() {
       <PageHeader
         eyebrow="Fleet"
         title="Bots"
-        description={`${fleet.bots.length} bot${fleet.bots.length === 1 ? '' : 's'} across ${
+        description={`${fleet.bots.length}${!isAdmin ? '/10' : ''} bot${fleet.bots.length === 1 ? '' : 's'} across ${
           groups.length || 0
-        } categor${groups.length === 1 ? 'y' : 'ies'} · ${runningTotal} running`}
+        } categor${groups.length === 1 ? 'y' : 'ies'} · ${runningTotal} running${
+          atBotLimit ? ' · (10-bot limit reached)' : ''
+        }`}
         actions={
           <>
             <LiveDot live={fleet.live} label="Fleet" />
+            {checkedBots.size ? (
+              <Button
+                variant="danger"
+                onClick={() => setMassDeleteOpen(true)}
+                className="gap-1.5"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                Delete {checkedBots.size}
+              </Button>
+            ) : null}
             <Button variant="secondary" onClick={() => setCastOpen(true)} disabled={!runningTotal}>
               <Send className="h-3.5 w-3.5" />
               Broadcast
             </Button>
-            <Button onClick={() => setCreateOpen(true)}>
+            <Button
+              onClick={openCreateModal}
+              disabled={atBotLimit}
+              title={atBotLimit ? 'Account limit reached: maximum 10 bots for standard accounts' : 'Create new bot'}
+            >
               <Plus className="h-3.5 w-3.5" />
-              New bot
+              New bot {!isAdmin ? `(${fleet.bots.length}/10)` : ''}
             </Button>
           </>
         }
@@ -290,28 +544,207 @@ export default function BotsPage() {
 
       {fleet.error ? <ErrorNote>{fleet.error}</ErrorNote> : null}
 
-      <div className="grid items-start gap-5 lg:grid-cols-[19rem_minmax(0,1fr)]">
-        {/* Roster rail */}
-        <aside className="panel-surface overflow-hidden rounded-2xl lg:sticky lg:top-[calc(var(--header-h)+1.25rem)]">
-          <div className="space-y-2.5 border-b border-white/[0.07] p-4">
-            <div className="relative">
-              <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-white/25" />
-              <Input
-                value={search}
-                onChange={(event) => setSearch(event.target.value)}
-                placeholder="Search roster"
-                className="pl-9"
-                aria-label="Search roster"
-              />
+      <div className="grid items-start gap-6 md:grid-cols-[19rem_minmax(0,1fr)] lg:grid-cols-[21rem_minmax(0,1fr)] xl:grid-cols-[22rem_minmax(0,1fr)]">
+        {/* Mobile switcher: toggle between roster and workspace on small screens */}
+        <div className="flex rounded-xl border border-white/[0.08] bg-white/[0.03] p-1 md:hidden col-span-full">
+          <button
+            type="button"
+            onClick={() => setMobileTab('roster')}
+            className={cn(
+              'flex flex-1 items-center justify-center gap-2 rounded-lg py-2 text-xs font-medium transition',
+              mobileTab === 'roster'
+                ? 'bg-white/[0.12] text-white shadow-sm'
+                : 'text-white/50 hover:text-white'
+            )}
+          >
+            <Bot className="h-3.5 w-3.5" />
+            <span>Roster ({visible.length})</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setMobileTab('workspace')}
+            className={cn(
+              'flex flex-1 items-center justify-center gap-2 rounded-lg py-2 text-xs font-medium transition',
+              mobileTab === 'workspace'
+                ? 'bg-white/[0.12] text-white shadow-sm'
+                : 'text-white/50 hover:text-white'
+            )}
+          >
+            <span>Workspace</span>
+            {selected ? (
+              <span className="max-w-[120px] truncate text-white/40">
+                · {fleet.bots.find((b) => b.id === selected)?.config?.username || selected}
+              </span>
+            ) : null}
+          </button>
+        </div>
+
+        {/* Left in-page sidebar: Bot selector & roster */}
+        <aside
+          className={cn(
+            'panel-surface flex flex-col min-h-0 overflow-hidden rounded-2xl md:sticky md:top-[calc(var(--header-h)+1rem)] md:max-h-[calc(100vh-var(--header-h)-2.5rem)]',
+            mobileTab !== 'roster' && 'hidden md:flex'
+          )}
+        >
+          {/* Sidebar Top Header */}
+          <div className="flex items-center justify-between border-b border-white/[0.07] px-4 py-3">
+            <div className="flex items-center gap-2">
+              <span className="text-[12px] font-semibold uppercase tracking-[0.14em] text-white/60">
+                Roster
+              </span>
+              <span
+                title={!isAdmin ? `${fleet.bots.length} of 10 maximum bots used` : `${fleet.bots.length} bots registered`}
+                className={cn(
+                  'rounded-full px-2 py-0.5 text-[10px] font-medium transition',
+                  atBotLimit
+                    ? 'border border-amber-500/30 bg-amber-500/15 text-amber-300 font-semibold'
+                    : 'bg-white/[0.08] text-white/50'
+                )}
+              >
+                {visible.length}{visible.length !== fleet.bots.length ? ` of ${fleet.bots.length}` : ''}
+                {!isAdmin ? ` (max 10)` : ''}
+              </span>
             </div>
-            <Select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} aria-label="Filter by status">
-              <option value="all">All statuses</option>
-              <option value="running">Running only</option>
-              <option value="stopped">Stopped only</option>
-            </Select>
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => {
+                  if (selectMode) {
+                    setSelectMode(false);
+                    setCheckedBots(new Set());
+                  } else {
+                    setSelectMode(true);
+                  }
+                }}
+                title={selectMode ? 'Exit selection mode' : 'Select multiple bots'}
+                className={cn(
+                  'inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[11px] font-medium transition',
+                  selectMode
+                    ? 'border-white/30 bg-white/[0.12] text-white shadow-sm'
+                    : 'border-white/10 bg-white/[0.05] text-white/70 hover:border-white/20 hover:bg-white/[0.10] hover:text-white'
+                )}
+              >
+                <CheckSquare className="h-3 w-3" />
+                <span>{selectMode ? 'Done' : 'Select'}</span>
+              </button>
+              <button
+                type="button"
+                onClick={openCreateModal}
+                title={atBotLimit ? 'Account limit reached: maximum 10 bots for standard accounts' : 'Create new bot'}
+                className={cn(
+                  'inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[11px] font-medium transition',
+                  atBotLimit
+                    ? 'border-amber-500/20 bg-amber-500/10 text-amber-300 hover:bg-amber-500/15'
+                    : 'border-white/10 bg-white/[0.05] text-white/70 hover:border-white/20 hover:bg-white/[0.10] hover:text-white'
+                )}
+              >
+                <Plus className="h-3 w-3" />
+                <span>New bot</span>
+              </button>
+            </div>
           </div>
 
-          <div className="console-scrollbar max-h-[calc(100vh-19rem)] overflow-y-auto p-2">
+          {/* Search & Filter Header */}
+          <div className="space-y-2.5 border-b border-white/[0.07] p-3.5">
+            {/* Sleek Search Bar */}
+            <div className="group relative flex items-center">
+              <Search className="pointer-events-none absolute left-3 h-4 w-4 text-white/35 transition-colors group-focus-within:text-white/80" />
+              <input
+                type="text"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder="Search roster..."
+                aria-label="Search roster"
+                className="h-9 w-full rounded-xl border border-white/[0.08] bg-white/[0.035] pl-9 pr-8 text-[13px] text-white placeholder:text-white/30 transition-all duration-200 hover:border-white/15 hover:bg-white/[0.055] focus:border-white/30 focus:bg-white/[0.07] focus:outline-none focus:ring-2 focus:ring-white/[0.06]"
+              />
+              {search ? (
+                <button
+                  type="button"
+                  onClick={() => setSearch('')}
+                  aria-label="Clear search"
+                  className="absolute right-2.5 rounded-md p-1 text-white/40 transition hover:bg-white/[0.08] hover:text-white"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              ) : null}
+            </div>
+
+            {/* Segmented Filter Pills */}
+            <div className="grid grid-cols-3 gap-1 rounded-xl border border-white/[0.07] bg-white/[0.025] p-1">
+              <button
+                type="button"
+                onClick={() => setStatusFilter('all')}
+                className={cn(
+                  'flex items-center justify-center gap-1.5 rounded-lg py-1.5 text-[11px] font-medium transition-all duration-200',
+                  statusFilter === 'all'
+                    ? 'bg-white/[0.12] text-white shadow-sm'
+                    : 'text-white/40 hover:bg-white/[0.04] hover:text-white/70'
+                )}
+              >
+                <span>All</span>
+                <span className="tnum rounded-full bg-white/[0.06] px-1.5 py-0.5 text-[10px] text-white/50">
+                  {fleet.bots.length}
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setStatusFilter('running')}
+                className={cn(
+                  'flex items-center justify-center gap-1.5 rounded-lg py-1.5 text-[11px] font-medium transition-all duration-200',
+                  statusFilter === 'running'
+                    ? 'bg-white/[0.12] text-white shadow-sm'
+                    : 'text-white/40 hover:bg-white/[0.04] hover:text-white/70'
+                )}
+              >
+                <span className="h-1.5 w-1.5 rounded-full bg-white anim-pulse" />
+                <span>Live</span>
+                <span className="tnum rounded-full bg-white/[0.06] px-1.5 py-0.5 text-[10px] text-white/50">
+                  {runningTotal}
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setStatusFilter('stopped')}
+                className={cn(
+                  'flex items-center justify-center gap-1.5 rounded-lg py-1.5 text-[11px] font-medium transition-all duration-200',
+                  statusFilter === 'stopped'
+                    ? 'bg-white/[0.12] text-white shadow-sm'
+                    : 'text-white/40 hover:bg-white/[0.04] hover:text-white/70'
+                )}
+              >
+                <span>Off</span>
+                <span className="tnum rounded-full bg-white/[0.06] px-1.5 py-0.5 text-[10px] text-white/50">
+                  {fleet.bots.length - runningTotal}
+                </span>
+              </button>
+            </div>
+          </div>
+
+          {/* Select Mode Subheader */}
+          {selectMode ? (
+            <div className="flex items-center justify-between border-b border-white/[0.07] bg-white/[0.025] px-3.5 py-2 text-[11px]">
+              <label className="flex cursor-pointer items-center gap-2 select-none text-white/70 hover:text-white">
+                <Checkbox
+                  checked={visible.length > 0 && visible.every((b) => checkedBots.has(b.id))}
+                  onChange={(checked) => selectAllVisible(checked)}
+                  disabled={!visible.length}
+                />
+                <span>Select all visible ({visible.length})</span>
+              </label>
+              {checkedBots.size ? (
+                <button
+                  type="button"
+                  onClick={() => setCheckedBots(new Set())}
+                  className="text-[11px] text-white/40 transition hover:text-white"
+                >
+                  Clear ({checkedBots.size})
+                </button>
+              ) : null}
+            </div>
+          ) : null}
+
+          {/* Scrollable Roster Area */}
+          <div className="console-scrollbar flex-1 min-h-0 overflow-y-auto p-2.5 space-y-1.5">
             {fleet.loading && !fleet.bots.length ? (
               <div className="py-10">
                 <Spinner label="Loading roster" />
@@ -326,9 +759,21 @@ export default function BotsPage() {
 
             {groups.map((group) => {
               const isCollapsed = collapsed.has(group.name);
+              const allInGroupChecked = group.bots.length > 0 && group.bots.every((b) => checkedBots.has(b.id));
               return (
                 <section key={group.name} className="mb-1.5">
-                  <div className="flex items-center gap-1 rounded-lg px-1.5 py-1.5">
+                  <div className="flex items-center gap-1 rounded-lg px-2 py-1.5 transition hover:bg-white/[0.02]">
+                    {selectMode ? (
+                      <div
+                        onClick={(e) => e.stopPropagation()}
+                        className="mr-1 shrink-0"
+                      >
+                        <Checkbox
+                          checked={allInGroupChecked}
+                          onChange={(checked) => toggleGroupCheck(group, checked)}
+                        />
+                      </div>
+                    ) : null}
                     <button
                       type="button"
                       onClick={() => toggleGroup(group.name)}
@@ -341,20 +786,20 @@ export default function BotsPage() {
                           isCollapsed && '-rotate-90'
                         )}
                       />
-                      <span className="min-w-0 flex-1 truncate text-[11px] font-medium uppercase tracking-[0.11em] text-white/45">
+                      <span className="min-w-0 flex-1 truncate text-[11px] font-semibold uppercase tracking-[0.12em] text-white/45">
                         {group.name}
                       </span>
-                      <span className="tnum shrink-0 text-[10px] text-white/30">
+                      <span className="tnum shrink-0 rounded bg-white/[0.04] px-1.5 py-0.5 text-[10px] text-white/35">
                         {group.running}/{group.bots.length}
                       </span>
                     </button>
-                    <span className="flex shrink-0 items-center">
+                    <span className="flex shrink-0 items-center gap-0.5">
                       <button
                         type="button"
                         title={`Start all in ${group.name}`}
                         disabled={groupBusy === `${group.name}:start`}
                         onClick={() => groupLifecycle(group, 'start')}
-                        className="rounded-md p-1.5 text-white/30 transition hover:bg-white/[0.06] hover:text-white disabled:opacity-30"
+                        className="rounded-md p-1.5 text-white/30 transition hover:bg-white/[0.08] hover:text-white disabled:opacity-30"
                       >
                         <Play className="h-3 w-3" />
                       </button>
@@ -363,7 +808,7 @@ export default function BotsPage() {
                         title={`Stop all in ${group.name}`}
                         disabled={groupBusy === `${group.name}:stop`}
                         onClick={() => groupLifecycle(group, 'stop')}
-                        className="rounded-md p-1.5 text-white/30 transition hover:bg-white/[0.06] hover:text-white disabled:opacity-30"
+                        className="rounded-md p-1.5 text-white/30 transition hover:bg-white/[0.08] hover:text-white disabled:opacity-30"
                       >
                         <Square className="h-3 w-3" />
                       </button>
@@ -371,39 +816,98 @@ export default function BotsPage() {
                   </div>
 
                   {isCollapsed ? null : (
-                    <ul className="space-y-0.5">
+                    <ul className="mt-0.5 space-y-0.5">
                       {group.bots.map((bot) => {
                         const config = bot.config || {};
                         const isActive = bot.id === selected;
                         const isRunning = bot.status === 'running';
+                        const isChecked = checkedBots.has(bot.id);
                         return (
                           <li key={bot.id}>
-                            <button
-                              type="button"
-                              onClick={() => setSelected(bot.id)}
+                            <div
+                              role="button"
+                              tabIndex={0}
+                              onClick={() => {
+                                if (selectMode) {
+                                  toggleBotCheck(bot.id);
+                                } else {
+                                  setSelected(bot.id);
+                                  setMobileTab('workspace');
+                                }
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter' || e.key === ' ') {
+                                  e.preventDefault();
+                                  if (selectMode) {
+                                    toggleBotCheck(bot.id);
+                                  } else {
+                                    setSelected(bot.id);
+                                    setMobileTab('workspace');
+                                  }
+                                }
+                              }}
                               aria-current={isActive ? 'true' : undefined}
                               className={cn(
-                                'flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors duration-150',
-                                isActive ? 'bg-white/[0.10] text-white' : 'text-white/55 hover:bg-white/[0.04] hover:text-white/80'
+                                'group flex w-full cursor-pointer items-center gap-2.5 rounded-xl px-2.5 py-1.5 text-left transition-all duration-150 select-none',
+                                isActive
+                                  ? 'border border-white/[0.14] bg-white/[0.10] text-white shadow-sm ring-1 ring-white/10'
+                                  : isChecked
+                                    ? 'border border-white/[0.12] bg-white/[0.06] text-white'
+                                    : 'border border-transparent text-white/60 hover:border-white/10 hover:bg-white/[0.045] hover:text-white'
                               )}
                             >
+                              {selectMode ? (
+                                <div
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    toggleBotCheck(bot.id);
+                                  }}
+                                  className="shrink-0"
+                                >
+                                  <Checkbox
+                                    checked={isChecked}
+                                    onChange={(checked) => toggleBotCheck(bot.id, checked)}
+                                  />
+                                </div>
+                              ) : null}
+
                               <span
                                 title={bot.status || 'stopped'}
                                 className={cn(
-                                  'h-1.5 w-1.5 shrink-0 rounded-full',
-                                  isRunning ? 'bg-white anim-pulse' : 'bg-white/20'
+                                  'h-2 w-2 shrink-0 rounded-full transition',
+                                  isRunning
+                                    ? 'bg-emerald-400 anim-pulse shadow-[0_0_8px_rgba(52,211,153,0.8)]'
+                                    : 'bg-white/20'
                                 )}
                               />
-                              <span className="min-w-0 flex-1">
-                                <span className="block truncate text-[13px] leading-tight">
+
+                              <div className="min-w-0 flex-1">
+                                <span className="block truncate text-[13px] font-medium leading-tight text-white/90 group-hover:text-white">
                                   {config.username || bot.id}
                                 </span>
-                                <span className="mt-0.5 block truncate font-mono text-[10px] text-white/30">
+                                <span className="mt-0.5 block truncate font-mono text-[10px] text-white/35">
                                   {egressLabel(bot)}
                                 </span>
-                              </span>
-                              {bot.shards ? <span className="tnum shrink-0 text-[10px] text-white/30">{bot.shards}</span> : null}
-                            </button>
+                              </div>
+
+                              {bot.shards !== null && bot.shards !== undefined ? (
+                                <span
+                                  title={`${Number(bot.shards).toLocaleString()} shards`}
+                                  className="tnum inline-flex shrink-0 items-center gap-1 rounded-md border border-amber-400/25 bg-amber-400/10 px-1.5 py-0.5 text-[11px] font-semibold text-amber-300 shadow-[0_0_8px_rgba(251,191,36,0.12)]"
+                                >
+                                  <Gem className="h-2.5 w-2.5 text-amber-400" />
+                                  <span>{formatShards(bot.shards)}</span>
+                                </span>
+                              ) : isRunning ? (
+                                <span
+                                  title="Waiting for shards update..."
+                                  className="tnum inline-flex shrink-0 items-center gap-1 rounded-md border border-white/[0.06] bg-white/[0.02] px-1.5 py-0.5 text-[10px] text-white/30"
+                                >
+                                  <Gem className="h-2.5 w-2.5 opacity-40" />
+                                  <span>--</span>
+                                </span>
+                              ) : null}
+                            </div>
                           </li>
                         );
                       })}
@@ -413,10 +917,81 @@ export default function BotsPage() {
               );
             })}
           </div>
+
+          {/* Sidebar Footer or Mass Action Bar */}
+          {checkedBots.size > 0 ? (
+            <div className="border-t border-white/[0.12] bg-white/[0.05] p-3 backdrop-blur-xl">
+              <div className="flex items-center justify-between mb-2">
+                <span className="flex items-center gap-1.5 text-xs font-medium text-white">
+                  <span className="flex h-5 w-5 items-center justify-center rounded-full bg-white text-[10px] font-bold text-black">
+                    {checkedBots.size}
+                  </span>
+                  <span>selected</span>
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setCheckedBots(new Set())}
+                  className="text-[11px] text-white/40 transition hover:text-white"
+                >
+                  Deselect all
+                </button>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  loading={massActionBusy === 'start'}
+                  onClick={() => massLifecycle('start')}
+                  title="Start selected bots"
+                  className="flex-1 text-xs"
+                >
+                  <Play className="h-3 w-3" />
+                  Start
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  loading={massActionBusy === 'stop'}
+                  onClick={() => massLifecycle('stop')}
+                  title="Stop selected bots"
+                  className="flex-1 text-xs"
+                >
+                  <Square className="h-3 w-3" />
+                  Stop
+                </Button>
+                <Button
+                  variant="danger"
+                  size="sm"
+                  onClick={() => setMassDeleteOpen(true)}
+                  title="Delete selected bots"
+                  className="flex-1 text-xs"
+                >
+                  <Trash2 className="h-3 w-3" />
+                  Delete
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <div className="flex items-center justify-between border-t border-white/[0.07] px-4 py-2.5 text-[11px] text-white/40">
+              <span className="flex items-center gap-1.5">
+                <span className="h-1.5 w-1.5 rounded-full bg-white anim-pulse" />
+                <span className="tnum font-medium text-white/70">{runningTotal}</span> of {fleet.bots.length} live
+              </span>
+              <button
+                type="button"
+                onClick={() => setCastOpen(true)}
+                disabled={!runningTotal}
+                className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] text-white/50 transition hover:bg-white/[0.06] hover:text-white disabled:opacity-30 disabled:pointer-events-none"
+              >
+                <Send className="h-3 w-3" />
+                <span>Broadcast</span>
+              </button>
+            </div>
+          )}
         </aside>
 
         {/* Workspace for the selected bot */}
-        <div className="min-w-0">
+        <div className={cn('min-w-0', mobileTab !== 'workspace' && 'hidden md:block')}>
           {selected ? (
             <BotWorkspace
               key={selected}
@@ -440,7 +1015,7 @@ export default function BotsPage() {
                 }
                 action={
                   fleet.bots.length ? null : (
-                    <Button onClick={() => setCreateOpen(true)}>
+                    <Button onClick={openCreateModal} disabled={atBotLimit}>
                       <Plus className="h-3.5 w-3.5" />
                       New bot
                     </Button>
@@ -451,6 +1026,19 @@ export default function BotsPage() {
           )}
         </div>
       </div>
+
+      {/* Mass Delete Confirmation Modal */}
+      <ConfirmModal
+        open={massDeleteOpen}
+        onClose={() => setMassDeleteOpen(false)}
+        onConfirm={massDelete}
+        loading={massDeleting}
+        title={`Delete ${checkedBots.size} bot${checkedBots.size === 1 ? '' : 's'}`}
+        confirmLabel={`Delete ${checkedBots.size} bot${checkedBots.size === 1 ? '' : 's'}`}
+        description={`Are you sure you want to permanently delete ${checkedBots.size} bot${
+          checkedBots.size === 1 ? '' : 's'
+        }? They will be stopped, removed from the roster, and their data directories deleted. This cannot be undone.`}
+      />
 
       {/* Create bot */}
       <Modal
@@ -464,21 +1052,50 @@ export default function BotsPage() {
             <Button variant="ghost" onClick={() => setCreateOpen(false)}>
               Cancel
             </Button>
-            <Button loading={creating} onClick={createBot}>
+            <Button loading={creating} disabled={atBotLimit} onClick={createBot}>
               Create bot
             </Button>
           </>
         }
       >
         <div className="space-y-4">
+          {atBotLimit ? (
+            <div className="flex items-center gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-200">
+              <span>
+                <strong>Account Limit Reached:</strong> Standard accounts can register a maximum of 10 bots ({fleet.bots.length}/10 used). Delete an existing bot to create a new one.
+              </span>
+            </div>
+          ) : null}
+
           {createError ? <ErrorNote>{createError}</ErrorNote> : null}
 
+          {loadLastBotConfig() ? (
+            <div className="flex items-center justify-between rounded-xl border border-white/10 bg-white/[0.03] px-3.5 py-2 text-xs">
+              <span className="text-white/60">
+                Restored credentials &amp; settings from your last created bot.
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  try { localStorage.removeItem(LAST_BOT_CONFIG_KEY); } catch {}
+                  setForm({ ...BLANK_BOT, id: getNextBotId(fleet.bots) });
+                  toast('Form reset to default settings', 'info');
+                }}
+                className="ml-2 shrink-0 text-white/40 underline transition hover:text-white"
+              >
+                Reset to defaults
+              </button>
+            </div>
+          ) : null}
+
           <div className="grid gap-4 sm:grid-cols-2">
-            <Field label="Bot ID" hint="Letters, numbers, hyphen, underscore. Used as the process name.">
+            <Field label="Bot ID" hint="Auto-generated unique process identifier. Editable if needed.">
               <Input
                 value={form.id}
                 onChange={(event) => setForm({ ...form, id: event.target.value })}
-                placeholder="miner-01"
+                placeholder="bot-1"
+                aria-label="Bot ID"
+                className="font-mono text-xs"
               />
             </Field>
             <Field
@@ -554,12 +1171,14 @@ export default function BotsPage() {
                 ))}
               </Select>
             </Field>
-            <Field label="Reconnect delay (ms)">
+            <Field label="Reconnect delay (seconds)" hint="Delay before reconnecting after a disconnect.">
               <Input
                 type="number"
-                min="500"
-                value={form.reconnectDelay}
-                onChange={(event) => setForm({ ...form, reconnectDelay: event.target.value })}
+                min="0.5"
+                step="0.5"
+                value={form.reconnectDelaySec}
+                onChange={(event) => setForm({ ...form, reconnectDelaySec: event.target.value })}
+                placeholder="5"
               />
             </Field>
             {isAdmin ? (
@@ -601,13 +1220,23 @@ export default function BotsPage() {
             />
           </div>
 
+          <div className="rounded-xl border border-white/[0.08] bg-white/[0.02] p-3">
+            <Checkbox
+              checked={form.startOnCreate}
+              onChange={(checked) => setForm({ ...form, startOnCreate: checked })}
+              label="Start bot immediately after creation"
+              description="Launch the bot process right after it is created."
+            />
+          </div>
+
           {form.autoRegister || form.autoLogin ? (
-            <Field label="Login password" hint="Stored server-side and never returned to the browser.">
+            <Field label="Login password" hint="Server password for /register and /login. Stored server-side and saved for your next bots.">
               <Input
                 type="password"
                 autoComplete="new-password"
                 value={form.loginPassword}
                 onChange={(event) => setForm({ ...form, loginPassword: event.target.value })}
+                placeholder="Enter password..."
               />
             </Field>
           ) : null}
@@ -654,11 +1283,14 @@ export default function BotsPage() {
                 onChange={(event) => setForm({ ...form, collectSlot: event.target.value })}
               />
             </Field>
-            <Field label="Collector cycle (ms)">
+            <Field label="Collector cycle (seconds)" hint="Seconds between bone collection cycles.">
               <Input
                 type="number"
-                value={form.cycleDelay}
-                onChange={(event) => setForm({ ...form, cycleDelay: event.target.value })}
+                min="1"
+                step="1"
+                value={form.cycleDelaySec}
+                onChange={(event) => setForm({ ...form, cycleDelaySec: event.target.value })}
+                placeholder="15"
               />
             </Field>
           </div>
@@ -692,13 +1324,15 @@ export default function BotsPage() {
               className="font-mono"
             />
           </Field>
-          <Field label="Stagger (ms)" hint="Delay between bots, to avoid tripping server rate limits.">
+          <Field label="Stagger (seconds)" hint="Delay in seconds between bots (e.g. 0.25s or 1s) to avoid server rate limits.">
             <Input
               type="number"
               min="0"
-              max="300000"
-              value={cast.staggerMs}
-              onChange={(event) => setCast({ ...cast, staggerMs: event.target.value })}
+              max="300"
+              step="0.05"
+              value={cast.staggerSec}
+              onChange={(event) => setCast({ ...cast, staggerSec: event.target.value })}
+              placeholder="0.25"
             />
           </Field>
           <div>

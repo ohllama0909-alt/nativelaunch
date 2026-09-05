@@ -42,6 +42,7 @@ const MAX_LOG_LINES = 400;          // Per-bot in-memory log buffer
 const SNAPSHOT_LOG_LIMIT = 250;     // Panel snapshot on open
 const MAX_JOBS = 50;                // Job history kept on disk
 const MAX_SCHEDULES = 200;          // Pending actions + recent history
+const MAX_BOTS_PER_ACCOUNT = 10;     // Maximum bots per non-admin account
 const sleepMs = (ms) => new Promise(r => setTimeout(r, ms));
 
 // Mass-command jobs: execution is server-side so the panel tab can close and
@@ -71,6 +72,10 @@ async function runJobLoop(job, ids, staggerMs) {
             }
             job.done = Math.min(job.total, job.done + 1);
             job.pos = i + 1;
+            broadcastGlobal(viewer => {
+                if (viewer && viewer.role !== 'admin' && job.ownerId !== viewer.id) return null;
+                return { type: 'job', job: { ...job } };
+            });
             if (i < ids.length - 1 && staggerMs > 0) {
                 job.next = ids[i + 1];
                 job.nextAt = Date.now() + staggerMs;
@@ -85,6 +90,10 @@ async function runJobLoop(job, ids, staggerMs) {
         job.next = null;
         job.nextAt = null;
         persistJobs();
+        broadcastGlobal(viewer => {
+            if (viewer && viewer.role !== 'admin' && job.ownerId !== viewer.id) return null;
+            return { type: 'job', job: { ...job } };
+        });
     }
 }
 
@@ -551,6 +560,7 @@ function handleChildLine(state, bot, rawLine) {
             const data = JSON.parse(m[1]);
             const s = getBotState(id);
             s.shards = data.shards;
+            bot.shards = data.shards;
             emitToBotSubs(id, { type: 'shards', shards: data.shards });
             broadcastGlobal({ type: 'shards', id, shards: data.shards });
             return;
@@ -921,7 +931,7 @@ function publicBot(bot, user = null) {
     const owner = bot.ownerId ? users.findById(bot.ownerId) : null;
     const base = {
         id: bot.id, config: { ...(bot.config || {}) }, status: s.status, pid: s.proc?.pid || null,
-        hasInventory: !!s.inventory, shards: s.shards,
+        hasInventory: !!s.inventory, shards: s.shards !== null && s.shards !== undefined ? s.shards : (bot.shards ?? null),
         ownerId: bot.ownerId || null,
         ownerLabel: user && user.role === 'admin' ? (owner ? owner.email : null) : null
     };
@@ -1168,9 +1178,14 @@ async function handleHttp(req, res, state) {
         // content so the job payload is stable even if targets aren't live.
         const resolved = resolveCustomCmd(cmd, user.id);
         if (resolved) cmd = resolved;
-        const staggerMs = body.staggerMs === undefined ? 0 : Number(body.staggerMs);
+        let staggerMs = 0;
+        if (body.staggerSec !== undefined) {
+            staggerMs = Math.round(Number(body.staggerSec) * 1000);
+        } else if (body.staggerMs !== undefined) {
+            staggerMs = Number(body.staggerMs);
+        }
         if (!Number.isFinite(staggerMs) || staggerMs < 0 || staggerMs > 300000) {
-            return json(res, 400, { ok: false, reason: 'staggerMs must be between 0 and 300000' });
+            return json(res, 400, { ok: false, reason: 'stagger must be between 0 and 300 seconds' });
         }
         const includeIds = Array.isArray(body.botIds) && body.botIds.length > 0
             ? new Set(body.botIds.map(s => String(s).trim()))
@@ -1203,9 +1218,13 @@ async function handleHttp(req, res, state) {
         jobs.unshift(job);
         if (jobs.length > MAX_JOBS) jobs.length = MAX_JOBS;
         persistJobs();
+        broadcastGlobal(viewer => {
+            if (viewer && viewer.role !== 'admin' && job.ownerId !== viewer.id) return null;
+            return { type: 'job', job: { ...job } };
+        });
         runJobLoop(job, job.botIds, staggerMs);
 
-        return json(res, 202, { ok: true, jobId: job.id, total: job.total });
+        return json(res, 202, { ok: true, jobId: job.id, total: job.total, job });
     }
 
     // Job history (mass commands). Sent to the panel so it can re-attach to a
@@ -1579,6 +1598,17 @@ async function handleHttp(req, res, state) {
             ownerId = body.ownerId;
         }
 
+        const targetOwner = users.findById(ownerId) || user;
+        if (targetOwner.role !== 'admin') {
+            const ownedCount = state.bots.filter(b => b.ownerId === ownerId).length;
+            if (ownedCount >= MAX_BOTS_PER_ACCOUNT) {
+                return json(res, 403, {
+                    ok: false,
+                    reason: `Bot limit reached. Non-admin accounts can have a maximum of ${MAX_BOTS_PER_ACCOUNT} bots (${ownedCount}/${MAX_BOTS_PER_ACCOUNT} used).`
+                });
+            }
+        }
+
         if (body.proxyId) {
             const rec = proxies.get(String(body.proxyId));
             if (!rec || (user.role !== 'admin' && rec.owner !== user.id) || (user.role === 'admin' && rec.owner && rec.owner !== ownerId)) {
@@ -1606,6 +1636,35 @@ async function handleHttp(req, res, state) {
         saveBotsFile(state);
         broadcastGlobal(viewer => ({ type: 'bot-added', bot: publicBot(bot, viewer) }), state);
         return json(res, 200, { ok: true, bot: publicBot(bot, user) });
+    }
+
+    if (req.method === 'DELETE' && p === '/api/bots') {
+        const user = currentUser(req);
+        const body = await readJson(req).catch(() => ({}));
+        const ids = Array.isArray(body.ids) ? body.ids : [];
+        if (!ids.length) return json(res, 400, { ok: false, reason: 'No bot IDs provided' });
+
+        let removed = 0;
+        const removedBots = [];
+        for (const id of ids) {
+            const bot = state.bots.find(b => b.id === id);
+            if (!bot || !users.canManageBot(user, bot)) continue;
+            stopBot(id);
+            state.bots = state.bots.filter(b => b.id !== id);
+            runtime.delete(id);
+            broadcastGlobal(viewer => ({ type: 'bot-removed', id, bot: publicBot(bot, viewer) }), state);
+            users.revokeBotEverywhere(id);
+            const dataDir = path.resolve(BOTS_DIR, id);
+            if (dataDir.startsWith(BOTS_DIR + path.sep)) {
+                try { fs.rmSync(dataDir, { recursive: true, force: true }); } catch (_) { }
+            }
+            removed++;
+            removedBots.push(id);
+        }
+        if (removed > 0) {
+            saveBotsFile(state);
+        }
+        return json(res, 200, { ok: true, removed, ids: removedBots });
     }
 
     const m = p.match(/^\/api\/bots\/([a-zA-Z0-9_-]+)(?:\/(.+))?$/);
@@ -1643,6 +1702,15 @@ async function handleHttp(req, res, state) {
             const body = await readJson(req);
             const owner = users.findById(body.ownerId);
             if (!owner) return json(res, 400, { ok: false, reason: 'Unknown owner' });
+            if (owner.role !== 'admin') {
+                const ownedCount = state.bots.filter(b => b.ownerId === owner.id && b.id !== id).length;
+                if (ownedCount >= MAX_BOTS_PER_ACCOUNT) {
+                    return json(res, 403, {
+                        ok: false,
+                        reason: `Target account has reached the maximum of ${MAX_BOTS_PER_ACCOUNT} bots (${ownedCount}/${MAX_BOTS_PER_ACCOUNT} used).`
+                    });
+                }
+            }
             const dataDir = path.resolve(BOTS_DIR, id);
             const scriptsDir = path.join(dataDir, 'scripts');
             if (dataDir.startsWith(BOTS_DIR + path.sep)) {
@@ -1846,7 +1914,7 @@ async function handleHttp(req, res, state) {
             // Replay only the tail so long-running bots don't ship a giant
             // payload that freezes the panel on open.
             const recent = s.logs.length > SNAPSHOT_LOG_LIMIT ? s.logs.slice(-SNAPSHOT_LOG_LIMIT) : s.logs;
-            res.write(`data: ${JSON.stringify({ type: 'snapshot', status: s.status, logs: recent, inventory: s.inventory })}\n\n`);
+            res.write(`data: ${JSON.stringify({ type: 'snapshot', status: s.status, logs: recent, inventory: s.inventory, shards: s.shards !== null && s.shards !== undefined ? s.shards : (bot.shards ?? null) })}\n\n`);
             s.subs.add(res);
             const ping = setInterval(() => { try { res.write(': ping\n\n'); } catch (_) { } }, 25000);
             req.on('close', () => { clearInterval(ping); s.subs.delete(res); });
@@ -1861,7 +1929,9 @@ async function handleHttp(req, res, state) {
             'Connection': 'keep-alive', 'X-Accel-Buffering': 'no'
         });
         const visible = users.filterBots(user, state.bots);
-        res.write(`data: ${JSON.stringify({ type: 'hello', bots: visible.map(b => publicBot(b, user)) })}\n\n`);
+        const visibleJobs = user.role === 'admin' ? jobs : jobs.filter(job => job.ownerId === user.id);
+        const activeJob = visibleJobs.find(j => j.status === 'running') || visibleJobs[0] || null;
+        res.write(`data: ${JSON.stringify({ type: 'hello', bots: visible.map(b => publicBot(b, user)), activeJob })}\n\n`);
         // Remember who is listening so broadcastGlobal can scope bot events.
         res._bmUserId = user.id;
         globalSubs.add(res);

@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
-import { ArrowLeft, Play, Plus, RefreshCw, RotateCcw, Send, Square, Trash2 } from 'lucide-react';
+import { ArrowLeft, Gem, Play, Plus, RefreshCw, RotateCcw, Send, Square, Trash2 } from 'lucide-react';
 import { useToast } from '@/components/providers';
 import {
   Button,
@@ -114,6 +114,7 @@ export function BotWorkspace({ botId: botIdProp, onDeleted, backHref, fleetBots,
   }
 
   const config = (bot && bot.config) || {};
+  const effectiveShards = stream.shards !== null && stream.shards !== undefined ? stream.shards : (bot?.shards ?? null);
 
   return (
     <div className="space-y-7">
@@ -138,6 +139,15 @@ export function BotWorkspace({ botId: botIdProp, onDeleted, backHref, fleetBots,
         actions={
           <>
             <StatusBadge status={status} />
+            {effectiveShards !== null && effectiveShards !== undefined ? (
+              <span
+                title={`${Number(effectiveShards).toLocaleString()} shards`}
+                className="inline-flex items-center gap-1.5 rounded-xl border border-amber-400/25 bg-amber-400/10 px-3 py-1.5 text-xs font-semibold text-amber-300 shadow-[0_0_12px_rgba(251,191,36,0.15)]"
+              >
+                <Gem className="h-3.5 w-3.5 text-amber-400" />
+                <span>{Number(effectiveShards).toLocaleString()} shards</span>
+              </span>
+            ) : null}
             <LiveDot live={stream.live} label="Console" />
             {isRunning ? (
               <Button variant="secondary" loading={busy === 'stop'} onClick={() => lifecycle('stop')}>
@@ -304,7 +314,7 @@ function ConfigTab({ botId, bot, onSaved, fleetBots, fleetLoading }) {
     category: config.category || '',
     proxyId: config.proxyId || '',
     autoReconnect: config.autoReconnect !== false,
-    reconnectDelay: config.reconnectDelay || 5000,
+    reconnectDelaySec: config.reconnectDelay ? String(config.reconnectDelay / 1000) : '5',
     afkMode: config.afkMode !== false,
     autoLogin: !!config.autoLogin,
     autoRegister: !!config.autoRegister,
@@ -314,7 +324,7 @@ function ConfigTab({ botId, bot, onSaved, fleetBots, fleetLoading }) {
     discordToken: '',
     discordGuildId: (config.discord && config.discord.guildId) || '',
     collectSlot: (config.boneCollector && config.boneCollector.collectSlot) || 13,
-    cycleDelay: (config.boneCollector && config.boneCollector.cycleDelay) || 15000,
+    cycleDelaySec: (config.boneCollector && config.boneCollector.cycleDelay) ? String(config.boneCollector.cycleDelay / 1000) : '15',
     rewardServerCmd: config.rewardServerCmd || '',
     rewardWarpCmd: config.rewardWarpCmd || '',
     rewardInterval: config.rewardInterval || '',
@@ -340,13 +350,13 @@ function ConfigTab({ botId, bot, onSaved, fleetBots, fleetLoading }) {
       category: form.category,
       proxyId: form.proxyId,
       autoReconnect: form.autoReconnect,
-      reconnectDelay: Number(form.reconnectDelay),
+      reconnectDelay: Math.round((Number(form.reconnectDelaySec) || 5) * 1000),
       afkMode: form.afkMode,
       autoLogin: form.autoLogin,
       autoRegister: form.autoRegister,
       webhookUrl: form.webhookUrl,
       discord: { enabled: form.discordEnabled, guildId: form.discordGuildId },
-      boneCollector: { collectSlot: Number(form.collectSlot), cycleDelay: Number(form.cycleDelay) },
+      boneCollector: { collectSlot: Number(form.collectSlot), cycleDelay: Math.round((Number(form.cycleDelaySec) || 15) * 1000) },
       rewardServerCmd: form.rewardServerCmd,
       rewardWarpCmd: form.rewardWarpCmd,
     };
@@ -419,11 +429,13 @@ function ConfigTab({ botId, bot, onSaved, fleetBots, fleetLoading }) {
               ))}
             </Select>
           </Field>
-          <Field label="Reconnect delay (ms)">
+          <Field label="Reconnect delay (seconds)" hint="Seconds to wait before reconnecting after a disconnect.">
             <Input
               type="number"
-              value={form.reconnectDelay}
-              onChange={(event) => set({ reconnectDelay: event.target.value })}
+              min="0.5"
+              step="0.5"
+              value={form.reconnectDelaySec}
+              onChange={(event) => set({ reconnectDelaySec: event.target.value })}
             />
           </Field>
         </div>
@@ -528,11 +540,13 @@ function ConfigTab({ botId, bot, onSaved, fleetBots, fleetLoading }) {
               onChange={(event) => set({ collectSlot: event.target.value })}
             />
           </Field>
-          <Field label="Cycle delay (ms)">
+          <Field label="Cycle delay (seconds)" hint="Seconds between collection cycles.">
             <Input
               type="number"
-              value={form.cycleDelay}
-              onChange={(event) => set({ cycleDelay: event.target.value })}
+              min="1"
+              step="1"
+              value={form.cycleDelaySec}
+              onChange={(event) => set({ cycleDelaySec: event.target.value })}
             />
           </Field>
         </div>
