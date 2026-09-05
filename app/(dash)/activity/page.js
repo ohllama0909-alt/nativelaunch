@@ -68,6 +68,25 @@ export default function ActivityPage() {
                       {job.ownerLabel ? `${job.ownerLabel} · ` : ''}
                       {fmtDateTime(job.createdAt)} · {relTime(job.createdAt)}
                     </p>
+                    {(job.includeCategories && job.includeCategories.length) ||
+                    (job.excludeCategories && job.excludeCategories.length) ||
+                    (job.excludeBotIds && job.excludeBotIds.length) ? (
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        {(job.includeCategories || []).map((cat) => (
+                          <Pill key={`in-${cat}`} tone="strong">
+                            to {cat}
+                          </Pill>
+                        ))}
+                        {(job.excludeCategories || []).map((cat) => (
+                          <Pill key={`ex-${cat}`}>except {cat}</Pill>
+                        ))}
+                        {(job.excludeBotIds || []).length ? (
+                          <Pill tone="quiet">
+                            {job.excludeBotIds.length} bot{(job.excludeBotIds || []).length === 1 ? '' : 's'} skipped
+                          </Pill>
+                        ) : null}
+                      </div>
+                    ) : null}
                   </div>
                   <div className="flex items-center gap-2">
                     {job.interrupted ? <Pill tone="quiet">interrupted</Pill> : null}

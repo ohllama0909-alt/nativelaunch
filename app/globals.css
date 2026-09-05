@@ -296,6 +296,10 @@ body::after {
   from { transform: translateX(-120%) skewX(-18deg); }
   to   { transform: translateX(320%) skewX(-18deg); }
 }
+@keyframes bh-dock-in {
+  from { opacity: 0; transform: translateY(18px) scale(0.96); filter: blur(4px); }
+  to   { opacity: 1; transform: translateY(0) scale(1);      filter: blur(0); }
+}
 
 /* Scroll reveal - driven by IntersectionObserver in components/reveal.jsx */
 .reveal {
@@ -311,6 +315,7 @@ body::after {
 }
 .reveal.in { opacity: 1; transform: none; filter: blur(0); }
 
+.anim-dock-in { animation: bh-dock-in 0.45s var(--ease-expo) both; }
 .anim-rise  { animation: bh-rise 0.95s var(--ease-expo) both; }
 .anim-fade  { animation: bh-fade 1.1s var(--ease-expo) both; }
 .anim-scale { animation: bh-scale 0.8s var(--ease-expo) both; }
@@ -378,6 +383,31 @@ body::after {
 
 .hairline { border-top: 1px solid var(--edge-1); }
 .text-balance { text-wrap: balance; }
+
+/* Gradient display text - white melting into gray */
+.text-gradient {
+  background: linear-gradient(180deg, #ffffff 30%, rgba(255, 255, 255, 0.55) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* Keyboard hint chip */
+.kbd {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1;
+  padding: 4px 6px;
+  border-radius: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.55);
+  white-space: nowrap;
+}
+
+/* Horizontal chip rails without a visible scrollbar */
+.no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
+.no-scrollbar::-webkit-scrollbar { display: none; }
 
 /* Workspace density is persisted by the control service. Compact mode keeps
    all controls touch-safe while fitting more operational rows on screen. */

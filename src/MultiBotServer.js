@@ -1166,9 +1166,10 @@ async function handleHttp(req, res, state) {
     }
 
     // Mass command: send one command to many bots, optionally staggered.
-    // body: { cmd, target?: 'running' | 'all', delaySeconds?: number,
-    //         excludeCategories?: string[], includeCategories?: string[] }
-    // (default 'running')
+    // body: { cmd, botIds?, includeCategories?, excludeCategories?,
+    //         excludeBotIds?, staggerSec?, staggerMs? }
+    // Category matching is case-insensitive; bots outside the caller's grants
+    // are never targeted. Only running bots receive the command.
         if (req.method === 'POST' && p === '/api/mass-cmd') {
         const user = currentUser(req);
         const body = await readJson(req);
@@ -1190,15 +1191,32 @@ async function handleHttp(req, res, state) {
         const includeIds = Array.isArray(body.botIds) && body.botIds.length > 0
             ? new Set(body.botIds.map(s => String(s).trim()))
             : null;
+        const excludeIds = new Set(
+            (Array.isArray(body.excludeBotIds) ? body.excludeBotIds : [])
+                .map(s => String(s).trim()).filter(Boolean)
+        );
+        const normCat = (value) => String(value || '').trim().toLowerCase();
+        const cleanCats = (value) => [...new Set(
+            (Array.isArray(value) ? value : []).map(v => String(v || '').trim()).filter(Boolean)
+        )];
+        const includeCatList = cleanCats(body.includeCategories);
+        const excludeCatList = cleanCats(body.excludeCategories);
+        const includeCats = includeCatList.length ? new Set(includeCatList.map(normCat)) : null;
+        const excludeCats = new Set(excludeCatList.map(normCat));
+        const catOf = (bot) => normCat((bot.config && bot.config.category) || 'Uncategorized') || 'uncategorized';
         const targets = [];
         for (const bot of state.bots) {
             if (!users.canManageBot(user, bot)) continue;
             if (includeIds && !includeIds.has(bot.id)) continue;
+            if (excludeIds.has(bot.id)) continue;
+            const cat = catOf(bot);
+            if (includeCats && !includeCats.has(cat)) continue;
+            if (excludeCats.has(cat)) continue;
             if (!getBotState(bot.id).proc) continue; // running bots only
             targets.push(bot);
         }
         if (!targets.length) {
-            return json(res, 400, { ok: false, reason: 'No targets (nothing running or selected)' });
+            return json(res, 400, { ok: false, reason: 'No targets (nothing running, or every target was excluded)' });
         }
 
         const job = {
@@ -1210,6 +1228,9 @@ async function handleHttp(req, res, state) {
             total: targets.length,
             done: 0, ok: 0, skipped: 0, pos: 0,
             staggerMs,
+            includeCategories: includeCatList,
+            excludeCategories: excludeCatList,
+            excludeBotIds: [...excludeIds],
             status: 'running',
             next: targets.length > 1 ? null : null,
             nextAt: null,
@@ -1665,6 +1686,102 @@ async function handleHttp(req, res, state) {
             saveBotsFile(state);
         }
         return json(res, 200, { ok: true, removed, ids: removedBots });
+    }
+
+    // Bulk config update across many bots at once (used for "move selected
+    // bots to a category"). Only whitelisted fields are applied; anything
+    // else must go through the per-bot PATCH config route.
+    if (req.method === 'PATCH' && p === '/api/bots') {
+        const user = currentUser(req);
+        const body = await readJson(req).catch(() => ({}));
+        const ids = Array.isArray(body.ids)
+            ? [...new Set(body.ids.map(id => String(id).trim()).filter(Boolean))]
+            : [];
+        if (!ids.length || ids.length > 200) {
+            return json(res, 400, { ok: false, reason: 'Choose between 1 and 200 bots' });
+        }
+        if (body.category === undefined) {
+            return json(res, 400, { ok: false, reason: 'Nothing to update: provide a category' });
+        }
+        const category = String(body.category || '').trim() || 'Uncategorized';
+        if (category.length > 48) {
+            return json(res, 400, { ok: false, reason: 'Category must be 48 characters or fewer' });
+        }
+        const updated = [];
+        const skipped = [];
+        for (const id of ids) {
+            const bot = state.bots.find(b => b.id === id);
+            if (!bot || !users.canManageBot(user, bot)) {
+                skipped.push({ id, reason: 'Not available to your account' });
+                continue;
+            }
+            bot.config = mergeConfig(bot.config, { category });
+            updated.push(bot);
+            broadcastGlobal(viewer => ({ type: 'bot-updated', bot: publicBot(bot, viewer) }), state);
+        }
+        if (updated.length) saveBotsFile(state);
+        return json(res, 200, {
+            ok: true,
+            updated: updated.length,
+            skipped,
+            category,
+            bots: updated.map(b => publicBot(b, user))
+        });
+    }
+
+    // Bulk lifecycle: start / stop / restart many bots with one request.
+    // Per-bot results are returned so the panel can report partial success.
+    if (req.method === 'POST' && p === '/api/bots/lifecycle') {
+        const user = currentUser(req);
+        const body = await readJson(req).catch(() => ({}));
+        const action = String(body.action || '').trim().toLowerCase();
+        if (!['start', 'stop', 'restart'].includes(action)) {
+            return json(res, 400, { ok: false, reason: 'Action must be start, stop, or restart' });
+        }
+        const ids = Array.isArray(body.ids)
+            ? [...new Set(body.ids.map(id => String(id).trim()).filter(Boolean))]
+            : [];
+        if (!ids.length || ids.length > 200) {
+            return json(res, 400, { ok: false, reason: 'Choose between 1 and 200 bots' });
+        }
+        const results = [];
+        for (const id of ids) {
+            const bot = state.bots.find(b => b.id === id);
+            if (!bot || !users.canManageBot(user, bot)) {
+                results.push({ id, result: 'failed', reason: 'Not available to your account' });
+                continue;
+            }
+            const running = !!getBotState(id).proc;
+            if (action === 'restart') {
+                stopBot(id);
+                setTimeout(() => {
+                    const still = state.bots.find(b => b.id === id);
+                    if (still) startBot(state, still);
+                }, 2500);
+                results.push({ id, result: 'ok' });
+                continue;
+            }
+            if (action === 'start' && running) {
+                results.push({ id, result: 'skipped', reason: 'Already running' });
+                continue;
+            }
+            if (action === 'stop' && !running) {
+                results.push({ id, result: 'skipped', reason: 'Already stopped' });
+                continue;
+            }
+            const outcome = action === 'start' ? startBot(state, bot) : stopBot(id);
+            results.push(outcome.ok
+                ? { id, result: 'ok' }
+                : { id, result: 'failed', reason: outcome.reason || 'Action failed' });
+        }
+        return json(res, 200, {
+            ok: true,
+            action,
+            results,
+            okCount: results.filter(r => r.result === 'ok').length,
+            skippedCount: results.filter(r => r.result === 'skipped').length,
+            failedCount: results.filter(r => r.result === 'failed').length
+        });
     }
 
     const m = p.match(/^\/api\/bots\/([a-zA-Z0-9_-]+)(?:\/(.+))?$/);

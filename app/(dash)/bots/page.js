@@ -1,23 +1,29 @@
 'use client';
 
 /**
- * Bots - split view.
+ * Bots - fleet command.
  *
  * Left rail is the roster grouped by category; the right pane is the full
  * workspace for whichever bot is selected. The workspace itself lives in
  * components/bot-workspace.jsx so that this page and the /bots/[id] deep link
  * render exactly the same thing.
+ *
+ * Broadcasts are composed in the always-on floating BroadcastDock (⌘K):
+ * everyone, whole categories, the checked roster selection, or hand-picked
+ * bots - with category + bot exclusions and stagger control.
  */
 
 import { useEffect, useMemo, useState } from 'react';
 import {
   Bot,
-  Check,
   CheckSquare,
   ChevronDown,
+  FolderInput,
   Gem,
+  Layers,
   Play,
   Plus,
+  RotateCcw,
   Search,
   Send,
   Sparkles,
@@ -26,9 +32,10 @@ import {
   X,
 } from 'lucide-react';
 import { useAuth, useToast } from '@/components/providers';
-import { Button, Checkbox, EmptyState, Modal, PageHeader, Spinner } from '@/components/ui';
-import { BotPicker, ConfirmModal, ErrorNote, Field, Input, LiveDot, Pill, Select } from '@/components/dash-ui';
+import { Button, Checkbox, EmptyState, Modal, Spinner } from '@/components/ui';
+import { ConfirmModal, ErrorNote, Field, Input, LiveDot, Select } from '@/components/dash-ui';
 import { BotWorkspace } from '@/components/bot-workspace';
+import { BroadcastDock } from '@/components/broadcast-dock';
 import { useFleet, useResource } from '@/lib/hooks';
 import { api, cn } from '@/lib/api';
 import { withLiveProxyUsage } from '@/lib/format';
@@ -129,6 +136,11 @@ function getNextBotId(existingBots = [], lastId = '') {
 const BOT_ID = /^[a-zA-Z0-9_-]{1,24}$/;
 const MINECRAFT_USERNAME = /^[A-Za-z0-9_]{3,16}$/;
 
+function catOf(bot) {
+  const raw = (bot && bot.config && bot.config.category) || UNCATEGORIZED;
+  return String(raw).trim() || UNCATEGORIZED;
+}
+
 /**
  * Short egress label for a row.
  *
@@ -164,6 +176,13 @@ function formatShards(value) {
   return num.toLocaleString();
 }
 
+function sortCategories(a, b) {
+  if (a.name === b.name) return 0;
+  if (a.name === UNCATEGORIZED) return 1;
+  if (b.name === UNCATEGORIZED) return -1;
+  return a.name.localeCompare(b.name);
+}
+
 export default function BotsPage() {
   const { user } = useAuth();
   const { toast } = useToast();
@@ -176,6 +195,7 @@ export default function BotsPage() {
   const [selected, setSelected] = useState('');
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
+  const [categoryFilter, setCategoryFilter] = useState('all');
   const [mobileTab, setMobileTab] = useState('roster');
   const [collapsed, setCollapsed] = useState(() => new Set());
   const [groupBusy, setGroupBusy] = useState('');
@@ -186,6 +206,13 @@ export default function BotsPage() {
   const [massDeleting, setMassDeleting] = useState(false);
   const [massActionBusy, setMassActionBusy] = useState('');
 
+  // Bulk re-categorize: recatIds overrides the checked selection when moving
+  // a whole category from its group header.
+  const [recatOpen, setRecatOpen] = useState(false);
+  const [recatValue, setRecatValue] = useState('');
+  const [recatBusy, setRecatBusy] = useState(false);
+  const [recatIds, setRecatIds] = useState(null);
+
   const [createOpen, setCreateOpen] = useState(false);
   const [form, setForm] = useState(BLANK_BOT);
   const [creating, setCreating] = useState(false);
@@ -193,9 +220,26 @@ export default function BotsPage() {
   const [generatingName, setGeneratingName] = useState(false);
   const [usernameMeta, setUsernameMeta] = useState(null);
 
-  const [castOpen, setCastOpen] = useState(false);
-  const [cast, setCast] = useState({ cmd: '', staggerSec: '0.25', botIds: [] });
-  const [casting, setCasting] = useState(false);
+  // Fired into the floating BroadcastDock: { key, botIds?, includeCategories?, useSelected? }
+  const [castPreset, setCastPreset] = useState({ key: 0 });
+  const firePreset = (patch = {}) => setCastPreset({ key: Date.now(), ...patch });
+
+  const checkedIds = useMemo(() => Array.from(checkedBots), [checkedBots]);
+  const runningTotal = fleet.bots.filter((bot) => bot.status === 'running').length;
+  const totalShards = fleet.bots.reduce((sum, bot) => sum + (Number(bot.shards) || 0), 0);
+
+  /** Every category in the fleet, for the strip + suggestions. */
+  const allCategories = useMemo(() => {
+    const buckets = new Map();
+    for (const bot of fleet.bots) {
+      const name = catOf(bot);
+      if (!buckets.has(name)) buckets.set(name, { name, total: 0, running: 0 });
+      const row = buckets.get(name);
+      row.total += 1;
+      if (bot.status === 'running') row.running += 1;
+    }
+    return [...buckets.values()].sort(sortCategories);
+  }, [fleet.bots]);
 
   const visible = useMemo(() => {
     const term = search.trim().toLowerCase();
@@ -203,18 +247,19 @@ export default function BotsPage() {
       const config = bot.config || {};
       if (statusFilter === 'running' && bot.status !== 'running') return false;
       if (statusFilter === 'stopped' && bot.status === 'running') return false;
+      if (categoryFilter !== 'all' && catOf(bot) !== categoryFilter) return false;
       if (!term) return true;
       return [bot.id, config.username, config.category, config.host, bot.ownerLabel]
         .filter(Boolean)
         .some((field) => String(field).toLowerCase().includes(term));
     });
-  }, [fleet.bots, search, statusFilter]);
+  }, [fleet.bots, search, statusFilter, categoryFilter]);
 
   /** Category buckets, alphabetical, with Uncategorized pinned last. */
   const groups = useMemo(() => {
     const buckets = new Map();
     for (const bot of visible) {
-      const name = ((bot.config && bot.config.category) || UNCATEGORIZED).trim() || UNCATEGORIZED;
+      const name = catOf(bot);
       if (!buckets.has(name)) buckets.set(name, []);
       buckets.get(name).push(bot);
     }
@@ -226,12 +271,7 @@ export default function BotsPage() {
         ),
         running: items.filter((bot) => bot.status === 'running').length,
       }))
-      .sort((a, b) => {
-        if (a.name === b.name) return 0;
-        if (a.name === UNCATEGORIZED) return 1;
-        if (b.name === UNCATEGORIZED) return -1;
-        return a.name.localeCompare(b.name);
-      });
+      .sort(sortCategories);
   }, [visible]);
 
   // Keep a valid selection: adopt the first visible bot on load, and move on if
@@ -252,25 +292,32 @@ export default function BotsPage() {
       return next;
     });
 
-  /** Start or stop every bot in one category. */
+  const pastTense = (action) => (action === 'stop' ? 'stopped' : action === 'start' ? 'started' : 'restarting');
+
+  const reportLifecycle = (action, result, scope) => {
+    const ok = result.okCount ?? 0;
+    const skipped = result.skippedCount ?? 0;
+    const failed = result.failedCount ?? 0;
+    const where = scope ? ` in ${scope}` : '';
+    if (failed) toast(`${ok} ${pastTense(action)}${where} · ${failed} failed`, 'warning');
+    else if (!ok && skipped) toast(`Nothing to ${action}${where} — already ${action === 'stop' ? 'stopped' : 'running'}`, 'info');
+    else toast(`${ok} ${pastTense(action)}${where}`, 'success');
+  };
+
+  /** Start, stop, or restart every bot in one category via one request. */
   const groupLifecycle = async (group, action) => {
-    const targets = group.bots.filter((bot) =>
-      action === 'start' ? bot.status !== 'running' : bot.status === 'running'
-    );
-    if (!targets.length) {
-      toast(`Nothing to ${action} in ${group.name}`, 'info');
-      return;
-    }
+    const ids = group.bots.map((bot) => bot.id);
+    if (!ids.length) return;
     setGroupBusy(`${group.name}:${action}`);
-    const results = await Promise.allSettled(
-      targets.map((bot) => api(`/bots/${encodeURIComponent(bot.id)}/${action}`, { method: 'POST' }))
-    );
-    const failed = results.filter((result) => result.status === 'rejected').length;
-    const completed = action === 'stop' ? 'stopped' : 'started';
-    setGroupBusy('');
-    if (failed) toast(`${targets.length - failed} of ${targets.length} ${completed} in ${group.name}`, 'warning');
-    else toast(`${targets.length} ${completed} in ${group.name}`, 'success');
-    fleet.reload();
+    try {
+      const result = await api('/bots/lifecycle', { method: 'POST', body: JSON.stringify({ ids, action }) });
+      reportLifecycle(action, result, group.name);
+      fleet.reload();
+    } catch (reason) {
+      toast(reason.message, 'error');
+    } finally {
+      setGroupBusy('');
+    }
   };
 
   const toggleBotCheck = (id, force) => {
@@ -339,30 +386,42 @@ export default function BotsPage() {
   const massLifecycle = async (action) => {
     const ids = Array.from(checkedBots);
     if (!ids.length) return;
-    const targets = fleet.bots.filter(
-      (b) => ids.includes(b.id) && (action === 'start' ? b.status !== 'running' : b.status === 'running')
-    );
-    if (!targets.length) {
-      toast(`None of the selected bots need to be ${action}ed`, 'info');
-      return;
-    }
     setMassActionBusy(action);
     try {
-      const results = await Promise.allSettled(
-        targets.map((bot) => api(`/bots/${encodeURIComponent(bot.id)}/${action}`, { method: 'POST' }))
-      );
-      const failed = results.filter((r) => r.status === 'rejected').length;
-      const completed = action === 'stop' ? 'stopped' : 'started';
-      if (failed) {
-        toast(`${targets.length - failed} of ${targets.length} ${completed}`, 'warning');
-      } else {
-        toast(`${targets.length} bot${targets.length === 1 ? '' : 's'} ${completed}`, 'success');
-      }
+      const result = await api('/bots/lifecycle', { method: 'POST', body: JSON.stringify({ ids, action }) });
+      reportLifecycle(action, result, '');
       fleet.reload();
     } catch (reason) {
       toast(reason.message, 'error');
     } finally {
       setMassActionBusy('');
+    }
+  };
+
+  const openRecat = (ids = null, initial = '') => {
+    setRecatIds(ids);
+    setRecatValue(initial);
+    setRecatOpen(true);
+  };
+
+  /** Move the checked bots (or an explicit id list) into a new category. */
+  const massRecategorize = async () => {
+    const ids = recatIds || Array.from(checkedBots);
+    if (!ids.length) return;
+    const category = recatValue.trim() || UNCATEGORIZED;
+    setRecatBusy(true);
+    try {
+      const result = await api('/bots', { method: 'PATCH', body: JSON.stringify({ ids, category }) });
+      toast(`${result.updated} bot${result.updated === 1 ? '' : 's'} moved to “${result.category}”`, 'success');
+      setRecatOpen(false);
+      setRecatIds(null);
+      setRecatValue('');
+      setCheckedBots(new Set());
+      fleet.reload();
+    } catch (reason) {
+      toast(reason.message, 'error');
+    } finally {
+      setRecatBusy(false);
     }
   };
 
@@ -477,60 +536,65 @@ export default function BotsPage() {
     }
   };
 
-  const broadcast = async () => {
-    const cmd = cast.cmd.trim();
-    if (!cmd) return;
-    setCasting(true);
-    try {
-      const staggerSec = Number(cast.staggerSec);
-      const staggerMs = Number.isFinite(staggerSec) ? Math.max(0, Math.round(staggerSec * 1000)) : 250;
-      const body = { cmd, staggerMs, staggerSec };
-      if (cast.botIds.length) body.botIds = cast.botIds;
-      const result = await api('/mass-cmd', { method: 'POST', body: JSON.stringify(body) });
-      toast(`Queued for ${result.total} bot${result.total === 1 ? '' : 's'}`, 'success');
-      setCastOpen(false);
-      setCast({ cmd: '', staggerSec: '0.25', botIds: [] });
-    } catch (reason) {
-      toast(reason.message, 'error');
-    } finally {
-      setCasting(false);
-    }
-  };
-
-  const runningTotal = fleet.bots.filter((bot) => bot.status === 'running').length;
   const proxyOptions = useMemo(
     () => withLiveProxyUsage(proxies.data || [], fleet.bots, !fleet.loading),
     [proxies.data, fleet.bots, fleet.loading]
   );
 
+  const recatCount = (recatIds || checkedIds).length;
+
   return (
     <div className="space-y-6">
-      <PageHeader
-        eyebrow="Fleet"
-        title="Bots"
-        description={`${fleet.bots.length}${!isAdmin ? '/10' : ''} bot${fleet.bots.length === 1 ? '' : 's'} across ${
-          groups.length || 0
-        } categor${groups.length === 1 ? 'y' : 'ies'} · ${runningTotal} running${
-          atBotLimit ? ' · (10-bot limit reached)' : ''
-        }`}
-        actions={
-          <>
-            <LiveDot live={fleet.live} label="Fleet" />
+      {/* ---------- Modern fleet header ---------- */}
+      <header className="anim-rise relative overflow-hidden rounded-[26px] border border-white/[0.09] bg-white/[0.02] p-6 backdrop-blur-xl sm:p-8">
+        <div className="spotlight pointer-events-none absolute inset-0" />
+        <div className="pointer-events-none absolute -right-24 -top-24 h-64 w-64 rounded-full bg-white/[0.05] blur-3xl" />
+        <div className="pointer-events-none absolute -bottom-28 -left-16 h-56 w-56 rounded-full bg-white/[0.03] blur-3xl" />
+        <div className="relative flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
+          <div className="min-w-0">
+            <p className="eyebrow mb-3 flex items-center gap-2">
+              <span className={cn('h-1.5 w-1.5 rounded-full', fleet.live ? 'bg-white anim-pulse' : 'bg-white/25')} />
+              Fleet command
+            </p>
+            <h1 className="display text-gradient text-[34px] sm:text-[44px]">Bot fleet</h1>
+            <p className="mt-3 max-w-xl text-[14px] leading-relaxed text-white/45">
+              {fleet.bots.length}
+              {!isAdmin ? '/10' : ''} bot{fleet.bots.length === 1 ? '' : 's'} across {allCategories.length || 0}{' '}
+              categor{allCategories.length === 1 ? 'y' : 'ies'} · {runningTotal} running
+              {atBotLimit ? ' · quota reached' : ''}
+            </p>
+            <div className="mt-5 flex flex-wrap items-center gap-2">
+              <span className="inline-flex items-center gap-2 rounded-full border border-white/[0.10] bg-white/[0.04] px-3 py-1.5 text-[11px] text-white/65">
+                <span className={cn('h-1.5 w-1.5 rounded-full', runningTotal ? 'bg-white anim-pulse' : 'bg-white/25')} />
+                <span className="tnum font-semibold text-white">{runningTotal}</span> live
+              </span>
+              <span className="inline-flex items-center gap-2 rounded-full border border-white/[0.10] bg-white/[0.04] px-3 py-1.5 text-[11px] text-white/65">
+                <Layers className="h-3 w-3 text-white/40" />
+                <span className="tnum font-semibold text-white">{allCategories.length}</span> categories
+              </span>
+              {totalShards > 0 ? (
+                <span className="inline-flex items-center gap-2 rounded-full border border-white/[0.10] bg-white/[0.04] px-3 py-1.5 text-[11px] text-white/65">
+                  <Gem className="h-3 w-3 text-white/40" />
+                  <span className="tnum font-semibold text-white">{formatShards(totalShards)}</span> shards
+                </span>
+              ) : null}
+              <LiveDot live={fleet.live} label="Streaming" />
+            </div>
+          </div>
+          <div className="flex shrink-0 flex-wrap items-center gap-2.5">
             {checkedBots.size ? (
-              <Button
-                variant="danger"
-                onClick={() => setMassDeleteOpen(true)}
-                className="gap-1.5"
-              >
+              <Button variant="danger" onClick={() => setMassDeleteOpen(true)} className="gap-1.5">
                 <Trash2 className="h-3.5 w-3.5" />
                 Delete {checkedBots.size}
               </Button>
             ) : null}
-            <Button variant="secondary" onClick={() => setCastOpen(true)} disabled={!runningTotal}>
+            <Button variant="secondary" onClick={() => firePreset({})} disabled={!runningTotal} title="Open the floating broadcast composer (Ctrl/⌘+K)">
               <Send className="h-3.5 w-3.5" />
               Broadcast
+              <kbd className="kbd hidden sm:inline-block">⌘K</kbd>
             </Button>
             <Button
+              variant="primary"
               onClick={openCreateModal}
               disabled={atBotLimit}
               title={atBotLimit ? 'Account limit reached: maximum 10 bots for standard accounts' : 'Create new bot'}
@@ -538,11 +602,74 @@ export default function BotsPage() {
               <Plus className="h-3.5 w-3.5" />
               New bot {!isAdmin ? `(${fleet.bots.length}/10)` : ''}
             </Button>
-          </>
-        }
-      />
+          </div>
+        </div>
+      </header>
 
       {fleet.error ? <ErrorNote>{fleet.error}</ErrorNote> : null}
+
+      {/* ---------- Category strip: filter + one-click category actions ---------- */}
+      {allCategories.length > 0 ? (
+        <div className="anim-rise flex gap-2 overflow-x-auto pb-1 no-scrollbar" style={{ animationDelay: '60ms' }}>
+          <button
+            type="button"
+            onClick={() => setCategoryFilter('all')}
+            aria-pressed={categoryFilter === 'all'}
+            className={cn(
+              'inline-flex shrink-0 items-center gap-2 rounded-2xl border px-3.5 py-2 text-xs font-medium transition-all duration-200',
+              categoryFilter === 'all'
+                ? 'border-white bg-white text-black shadow-[0_8px_24px_rgba(0,0,0,.5)]'
+                : 'border-white/[0.09] bg-white/[0.03] text-white/55 hover:border-white/20 hover:text-white'
+            )}
+          >
+            All
+            <span className={cn('tnum rounded-full px-1.5 py-0.5 text-[10px]', categoryFilter === 'all' ? 'bg-black/10 text-black/70' : 'bg-white/[0.06] text-white/45')}>
+              {fleet.bots.length}
+            </span>
+          </button>
+          {allCategories.map((cat) => {
+            const active = categoryFilter === cat.name;
+            return (
+              <div
+                key={cat.name}
+                className={cn(
+                  'group inline-flex shrink-0 items-center gap-1 rounded-2xl border transition-all duration-200',
+                  active
+                    ? 'border-white bg-white text-black shadow-[0_8px_24px_rgba(0,0,0,.5)]'
+                    : 'border-white/[0.09] bg-white/[0.03] text-white/60 hover:border-white/20 hover:text-white'
+                )}
+              >
+                <button
+                  type="button"
+                  onClick={() => setCategoryFilter(active ? 'all' : cat.name)}
+                  aria-pressed={active}
+                  title={active ? 'Show all categories' : `Filter to ${cat.name}`}
+                  className="flex min-w-0 items-center gap-2 py-2 pl-3.5 pr-1 text-xs font-medium"
+                >
+                  <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', cat.running ? (active ? 'bg-black anim-pulse' : 'bg-white anim-pulse') : active ? 'bg-black/30' : 'bg-white/20')} />
+                  <span className="max-w-[140px] truncate">{cat.name}</span>
+                  <span className={cn('tnum rounded-full px-1.5 py-0.5 text-[10px]', active ? 'bg-black/10 text-black/70' : 'bg-white/[0.06] text-white/45')}>
+                    {cat.running}/{cat.total}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => firePreset({ includeCategories: [cat.name] })}
+                  disabled={!cat.running}
+                  title={`Broadcast to ${cat.name}`}
+                  aria-label={`Broadcast to ${cat.name}`}
+                  className={cn(
+                    'mr-1 rounded-lg p-1.5 transition disabled:opacity-25',
+                    active ? 'text-black/50 hover:bg-black/10 hover:text-black' : 'text-white/30 hover:bg-white/[0.08] hover:text-white'
+                  )}
+                >
+                  <Send className="h-3 w-3" />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
 
       <div className="grid items-start gap-6 md:grid-cols-[19rem_minmax(0,1fr)] lg:grid-cols-[21rem_minmax(0,1fr)] xl:grid-cols-[22rem_minmax(0,1fr)]">
         {/* Mobile switcher: toggle between roster and workspace on small screens */}
@@ -582,7 +709,7 @@ export default function BotsPage() {
         {/* Left in-page sidebar: Bot selector & roster */}
         <aside
           className={cn(
-            'panel-surface flex flex-col min-h-0 overflow-hidden rounded-2xl md:sticky md:top-[calc(var(--header-h)+1rem)] md:max-h-[calc(100vh-var(--header-h)-2.5rem)]',
+            'panel-surface flex flex-col min-h-0 overflow-hidden !rounded-[22px] md:sticky md:top-[calc(var(--header-h)+1rem)] md:max-h-[calc(100vh-var(--header-h)-2.5rem)]',
             mobileTab !== 'roster' && 'hidden md:flex'
           )}
         >
@@ -718,6 +845,19 @@ export default function BotsPage() {
                 </span>
               </button>
             </div>
+
+            {categoryFilter !== 'all' ? (
+              <button
+                type="button"
+                onClick={() => setCategoryFilter('all')}
+                className="flex w-full items-center justify-between rounded-xl border border-white/[0.12] bg-white/[0.05] px-3 py-1.5 text-[11px] text-white/70 transition hover:border-white/25 hover:text-white"
+              >
+                <span className="truncate">
+                  Filtered to <span className="font-semibold text-white">{categoryFilter}</span>
+                </span>
+                <X className="h-3 w-3 shrink-0" />
+              </button>
+            ) : null}
           </div>
 
           {/* Select Mode Subheader */}
@@ -762,7 +902,7 @@ export default function BotsPage() {
               const allInGroupChecked = group.bots.length > 0 && group.bots.every((b) => checkedBots.has(b.id));
               return (
                 <section key={group.name} className="mb-1.5">
-                  <div className="flex items-center gap-1 rounded-lg px-2 py-1.5 transition hover:bg-white/[0.02]">
+                  <div className="group flex items-center gap-1 rounded-lg px-2 py-1.5 transition hover:bg-white/[0.02]">
                     {selectMode ? (
                       <div
                         onClick={(e) => e.stopPropagation()}
@@ -794,6 +934,23 @@ export default function BotsPage() {
                       </span>
                     </button>
                     <span className="flex shrink-0 items-center gap-0.5">
+                      <button
+                        type="button"
+                        title={`Broadcast to ${group.name}`}
+                        disabled={!group.running}
+                        onClick={() => firePreset({ includeCategories: [group.name] })}
+                        className="rounded-md p-1.5 text-white/30 transition hover:bg-white/[0.08] hover:text-white disabled:opacity-25"
+                      >
+                        <Send className="h-3 w-3" />
+                      </button>
+                      <button
+                        type="button"
+                        title={`Move all in ${group.name} to another category`}
+                        onClick={() => openRecat(group.bots.map((bot) => bot.id))}
+                        className="rounded-md p-1.5 text-white/30 transition hover:bg-white/[0.08] hover:text-white"
+                      >
+                        <FolderInput className="h-3 w-3" />
+                      </button>
                       <button
                         type="button"
                         title={`Start all in ${group.name}`}
@@ -936,14 +1093,14 @@ export default function BotsPage() {
                   Deselect all
                 </button>
               </div>
-              <div className="flex items-center gap-1.5">
+              <div className="grid grid-cols-3 gap-1.5">
                 <Button
                   variant="secondary"
                   size="sm"
                   loading={massActionBusy === 'start'}
                   onClick={() => massLifecycle('start')}
                   title="Start selected bots"
-                  className="flex-1 text-xs"
+                  className="text-xs"
                 >
                   <Play className="h-3 w-3" />
                   Start
@@ -954,17 +1111,48 @@ export default function BotsPage() {
                   loading={massActionBusy === 'stop'}
                   onClick={() => massLifecycle('stop')}
                   title="Stop selected bots"
-                  className="flex-1 text-xs"
+                  className="text-xs"
                 >
                   <Square className="h-3 w-3" />
                   Stop
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  loading={massActionBusy === 'restart'}
+                  onClick={() => massLifecycle('restart')}
+                  title="Restart selected bots"
+                  className="text-xs"
+                >
+                  <RotateCcw className="h-3 w-3" />
+                  Restart
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => openRecat()}
+                  title="Move selected bots to another category"
+                  className="text-xs"
+                >
+                  <FolderInput className="h-3 w-3" />
+                  Category
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => firePreset({ useSelected: true })}
+                  title="Broadcast to the selected bots"
+                  className="text-xs"
+                >
+                  <Send className="h-3 w-3" />
+                  Cast
                 </Button>
                 <Button
                   variant="danger"
                   size="sm"
                   onClick={() => setMassDeleteOpen(true)}
                   title="Delete selected bots"
-                  className="flex-1 text-xs"
+                  className="text-xs"
                 >
                   <Trash2 className="h-3 w-3" />
                   Delete
@@ -979,12 +1167,13 @@ export default function BotsPage() {
               </span>
               <button
                 type="button"
-                onClick={() => setCastOpen(true)}
+                onClick={() => firePreset({})}
                 disabled={!runningTotal}
                 className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] text-white/50 transition hover:bg-white/[0.06] hover:text-white disabled:opacity-30 disabled:pointer-events-none"
               >
                 <Send className="h-3 w-3" />
                 <span>Broadcast</span>
+                <kbd className="kbd hidden sm:inline-block">⌘K</kbd>
               </button>
             </div>
           )}
@@ -1015,7 +1204,7 @@ export default function BotsPage() {
                 }
                 action={
                   fleet.bots.length ? null : (
-                    <Button onClick={openCreateModal} disabled={atBotLimit}>
+                    <Button variant="primary" onClick={openCreateModal} disabled={atBotLimit}>
                       <Plus className="h-3.5 w-3.5" />
                       New bot
                     </Button>
@@ -1026,6 +1215,14 @@ export default function BotsPage() {
           )}
         </div>
       </div>
+
+      {/* Floating always-on broadcast composer */}
+      <BroadcastDock
+        bots={fleet.bots}
+        activeJob={fleet.activeJob}
+        selectedIds={checkedIds}
+        preset={castPreset}
+      />
 
       {/* Mass Delete Confirmation Modal */}
       <ConfirmModal
@@ -1040,6 +1237,74 @@ export default function BotsPage() {
         }? They will be stopped, removed from the roster, and their data directories deleted. This cannot be undone.`}
       />
 
+      {/* Bulk re-categorize */}
+      <Modal
+        open={recatOpen}
+        onClose={() => setRecatOpen(false)}
+        title={`Move ${recatCount} bot${recatCount === 1 ? '' : 's'}`}
+        description="Pick an existing category or type a new one. The roster regroups instantly."
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setRecatOpen(false)}>
+              Cancel
+            </Button>
+            <Button loading={recatBusy} disabled={!recatCount} onClick={massRecategorize}>
+              <FolderInput className="h-3.5 w-3.5" />
+              Move {recatCount ? `(${recatCount})` : ''}
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-4">
+          <Field label="Category" hint="Leave blank for Uncategorized. 48 characters max.">
+            <Input
+              value={recatValue}
+              onChange={(event) => setRecatValue(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  event.preventDefault();
+                  massRecategorize();
+                }
+              }}
+              placeholder={UNCATEGORIZED}
+              maxLength={48}
+              list="nativelaunch-category-options"
+              autoFocus
+            />
+            <datalist id="nativelaunch-category-options">
+              {allCategories.map((cat) => (
+                <option key={cat.name} value={cat.name} />
+              ))}
+            </datalist>
+          </Field>
+          {allCategories.length > 0 ? (
+            <div>
+              <span className="field-label">Existing categories</span>
+              <div className="flex flex-wrap gap-1.5">
+                {allCategories.map((cat) => (
+                  <button
+                    key={cat.name}
+                    type="button"
+                    onClick={() => setRecatValue(cat.name)}
+                    className={cn(
+                      'inline-flex items-center gap-1.5 rounded-xl border px-2.5 py-1.5 text-[11px] font-medium transition',
+                      recatValue === cat.name
+                        ? 'border-white/50 bg-white text-black'
+                        : 'border-white/[0.10] bg-white/[0.03] text-white/60 hover:border-white/25 hover:text-white'
+                    )}
+                  >
+                    <span className="max-w-[140px] truncate">{cat.name}</span>
+                    <span className={cn('tnum text-[10px]', recatValue === cat.name ? 'text-black/55' : 'text-white/30')}>
+                      {cat.total}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
+        </div>
+      </Modal>
+
       {/* Create bot */}
       <Modal
         open={createOpen}
@@ -1052,7 +1317,7 @@ export default function BotsPage() {
             <Button variant="ghost" onClick={() => setCreateOpen(false)}>
               Cancel
             </Button>
-            <Button loading={creating} disabled={atBotLimit} onClick={createBot}>
+            <Button variant="primary" loading={creating} disabled={atBotLimit} onClick={createBot}>
               Create bot
             </Button>
           </>
@@ -1135,6 +1400,7 @@ export default function BotsPage() {
                 value={form.category}
                 onChange={(event) => setForm({ ...form, category: event.target.value })}
                 placeholder={UNCATEGORIZED}
+                list="nativelaunch-category-options"
               />
             </Field>
             <Field label="Server host">
@@ -1294,62 +1560,6 @@ export default function BotsPage() {
               />
             </Field>
           </div>
-        </div>
-      </Modal>
-
-      {/* Broadcast */}
-      <Modal
-        open={castOpen}
-        onClose={() => setCastOpen(false)}
-        title="Broadcast command"
-        description="Sent to running bots only. Alias names are expanded server-side."
-        footer={
-          <>
-            <Button variant="ghost" onClick={() => setCastOpen(false)}>
-              Cancel
-            </Button>
-            <Button loading={casting} disabled={!cast.cmd.trim()} onClick={broadcast}>
-              <Send className="h-3.5 w-3.5" />
-              Send
-            </Button>
-          </>
-        }
-      >
-        <div className="space-y-4">
-          <Field label="Command" hint="Chat text or a slash command, exactly as a player would type it.">
-            <Input
-              value={cast.cmd}
-              onChange={(event) => setCast({ ...cast, cmd: event.target.value })}
-              placeholder="!stats"
-              className="font-mono"
-            />
-          </Field>
-          <Field label="Stagger (seconds)" hint="Delay in seconds between bots (e.g. 0.25s or 1s) to avoid server rate limits.">
-            <Input
-              type="number"
-              min="0"
-              max="300"
-              step="0.05"
-              value={cast.staggerSec}
-              onChange={(event) => setCast({ ...cast, staggerSec: event.target.value })}
-              placeholder="0.25"
-            />
-          </Field>
-          <div>
-            <span className="field-label">Targets</span>
-            <p className="mb-2 text-[11px] text-white/30">Leave empty to hit every running bot you can see.</p>
-            <BotPicker
-              bots={fleet.bots.filter((bot) => bot.status === 'running')}
-              value={cast.botIds}
-              onChange={(botIds) => setCast({ ...cast, botIds })}
-              emptyLabel="No bots are running right now."
-            />
-          </div>
-          {cast.botIds.length ? (
-            <Pill tone="strong">
-              {cast.botIds.length} target{cast.botIds.length === 1 ? '' : 's'}
-            </Pill>
-          ) : null}
         </div>
       </Modal>
     </div>
