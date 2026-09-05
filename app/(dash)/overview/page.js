@@ -168,8 +168,8 @@ export default function OverviewPage() {
                       </td>
                       <td>
                         {bot.shards !== null && bot.shards !== undefined ? (
-                          <span className="inline-flex items-center gap-1 font-mono text-xs font-medium text-amber-300">
-                            <Gem className="h-3 w-3 text-amber-400" />
+                          <span className="inline-flex items-center gap-1 font-mono text-xs font-medium text-white">
+                            <Gem className="h-3 w-3 text-white/70" />
                             {Number(bot.shards).toLocaleString()}
                           </span>
                         ) : (

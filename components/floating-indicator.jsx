@@ -76,13 +76,13 @@ export function FloatingIndicator({ onOpenBroadcast }) {
                   className="flex items-center justify-between rounded-lg bg-white/[0.03] px-2.5 py-1.5 border border-white/[0.04]"
                 >
                   <div className="flex items-center gap-2 min-w-0">
-                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.8)]" />
+                    <span className="h-1.5 w-1.5 rounded-full bg-white shadow-[0_0_6px_rgba(255,255,255,0.8)]" />
                     <span className="truncate font-medium text-white/85">
                       {bot.config?.username || bot.id}
                     </span>
                   </div>
                   {bot.shards !== null && bot.shards !== undefined ? (
-                    <span className="font-mono text-[11px] text-amber-300/80">
+                    <span className="font-mono text-[11px] text-white/70">
                       {Number(bot.shards).toLocaleString()}
                     </span>
                   ) : (
@@ -130,8 +130,8 @@ export function FloatingIndicator({ onOpenBroadcast }) {
           <span className="relative flex h-2.5 w-2.5">
             {hasRunning ? (
               <>
-                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-60" />
-                <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.9)]" />
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-white opacity-60" />
+                <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-white shadow-[0_0_8px_rgba(255,255,255,0.9)]" />
               </>
             ) : (
               <span className="inline-flex h-2.5 w-2.5 rounded-full bg-white/20" />
@@ -156,13 +156,13 @@ export function FloatingIndicator({ onOpenBroadcast }) {
                 <span className="flex items-center gap-1 font-semibold text-white truncate">
                   {currentJob.status === 'running' ? (
                     <>
-                      <Radio className="h-3 w-3 text-blue-400 animate-pulse shrink-0" />
-                      <span className="text-blue-300 truncate">Broadcast:</span>
+                      <Radio className="h-3 w-3 text-white animate-pulse shrink-0" />
+                      <span className="text-white/80 truncate">Broadcast:</span>
                     </>
                   ) : (
                     <>
-                      <CheckCircle2 className="h-3 w-3 text-emerald-400 shrink-0" />
-                      <span className="text-emerald-300">Broadcast done:</span>
+                      <CheckCircle2 className="h-3 w-3 text-white shrink-0" />
+                      <span className="text-white/85">Broadcast done:</span>
                     </>
                   )}
                   <span className="font-mono text-white/90 truncate max-w-[80px]" title={currentJob.cmd}>
@@ -180,8 +180,8 @@ export function FloatingIndicator({ onOpenBroadcast }) {
                   className={cn(
                     'h-full transition-all duration-300 rounded-full',
                     currentJob.status === 'running'
-                      ? 'bg-gradient-to-r from-blue-500 to-emerald-400'
-                      : 'bg-emerald-400'
+                      ? 'bg-gradient-to-r from-white/50 to-white'
+                      : 'bg-white'
                   )}
                   style={{ width: `${jobProgressPct}%` }}
                 />

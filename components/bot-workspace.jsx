@@ -142,9 +142,9 @@ export function BotWorkspace({ botId: botIdProp, onDeleted, backHref, fleetBots,
             {effectiveShards !== null && effectiveShards !== undefined ? (
               <span
                 title={`${Number(effectiveShards).toLocaleString()} shards`}
-                className="inline-flex items-center gap-1.5 rounded-xl border border-amber-400/25 bg-amber-400/10 px-3 py-1.5 text-xs font-semibold text-amber-300 shadow-[0_0_12px_rgba(251,191,36,0.15)]"
+                className="inline-flex items-center gap-1.5 rounded-xl border border-white/20 bg-white/[0.08] px-3 py-1.5 text-xs font-semibold text-white shadow-[0_0_12px_rgba(255,255,255,0.15)]"
               >
-                <Gem className="h-3.5 w-3.5 text-amber-400" />
+                <Gem className="h-3.5 w-3.5 text-white/70" />
                 <span>{Number(effectiveShards).toLocaleString()} shards</span>
               </span>
             ) : null}
