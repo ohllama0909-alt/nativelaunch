@@ -18,9 +18,11 @@ import {
   Bot,
   CheckSquare,
   ChevronDown,
+  Dices,
   FolderInput,
   Gem,
   Layers,
+  Minus,
   Play,
   Plus,
   RotateCcw,
@@ -52,7 +54,7 @@ const BLANK_BOT = {
   port: '25565',
   version: '1.20.1',
   auth: 'offline',
-  proxyId: '',
+  proxyId: 'auto',
   autoReconnect: true,
   reconnectDelaySec: '5',
   afkMode: true,
@@ -219,6 +221,20 @@ export default function BotsPage() {
   const [createError, setCreateError] = useState('');
   const [generatingName, setGeneratingName] = useState(false);
   const [usernameMeta, setUsernameMeta] = useState(null);
+
+  // Bulk creation: roll N names, then create N bots at once with the shared
+  // settings below. Rows are { key, username, inspiredBy }.
+  const [createMode, setCreateMode] = useState('single');
+  const [bulkCount, setBulkCount] = useState(5);
+  const [bulkNames, setBulkNames] = useState([]);
+  const [rolling, setRolling] = useState(false);
+  const [rerolling, setRerolling] = useState('');
+  const [bulkCreating, setBulkCreating] = useState(false);
+  const newBulkRow = (username = '', inspiredBy = '') => ({
+    key: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    username,
+    inspiredBy,
+  });
 
   // Fired into the floating BroadcastDock: { key, botIds?, includeCategories?, useSelected? }
   const [castPreset, setCastPreset] = useState({ key: 0 });
@@ -434,6 +450,9 @@ export default function BotsPage() {
         ...saved,
         id: nextId,
         username: '',
+        // Legacy saves predate auto-assign; an explicitly stored '' still
+        // means the operator chose a direct connection last time.
+        proxyId: saved.proxyId ?? 'auto',
       });
     } else {
       setForm({
@@ -442,6 +461,13 @@ export default function BotsPage() {
         username: '',
       });
     }
+    setCreateMode('single');
+    const slots = isAdmin ? 10 : Math.max(0, 10 - fleet.bots.length);
+    const initial = Math.max(1, Math.min(5, Math.min(10, slots) || 1));
+    setBulkCount(initial);
+    setBulkNames([]);
+    setRolling(false);
+    setRerolling('');
     setCreateError('');
     setUsernameMeta(null);
     setCreateOpen(true);
@@ -487,7 +513,8 @@ export default function BotsPage() {
         cycleDelay: Math.round((Number(form.cycleDelaySec) || 15) * 1000),
       },
     };
-    if (form.proxyId) payload.proxyId = form.proxyId;
+    if (form.proxyId === 'auto') payload.autoProxy = true;
+    else if (form.proxyId) payload.proxyId = form.proxyId;
     if (form.loginPassword) payload.loginPassword = form.loginPassword;
     if (isAdmin && form.ownerId) payload.ownerId = form.ownerId;
 
@@ -500,15 +527,16 @@ export default function BotsPage() {
       saveLastBotConfig(form, id);
 
       // If startOnCreate is selected, start the bot immediately
+      const via = result?.assignedProxy ? ` on ${result.assignedProxy.label}` : '';
       if (form.startOnCreate) {
         try {
           await api(`/bots/${encodeURIComponent(id)}/start`, { method: 'POST' });
-          toast(`${id} created and started`, 'success');
+          toast(`${id} created and started${via}`, 'success');
         } catch (startErr) {
-          toast(`${id} created, but failed to start: ${startErr.message}`, 'warning');
+          toast(`${id} created${via}, but failed to start: ${startErr.message}`, 'warning');
         }
       } else {
-        toast(`${id} created`, 'success');
+        toast(`${id} created${via || (result?.proxyNote ? ' (direct — pool full)' : '')}`, 'success');
       }
 
       setCreateOpen(false);
@@ -536,10 +564,158 @@ export default function BotsPage() {
     }
   };
 
+  const switchCreateMode = (mode) => {
+    setCreateMode(mode);
+    setCreateError('');
+    if (mode === 'bulk') {
+      setBulkNames((current) => (current.length
+        ? current
+        : Array.from({ length: bulkCount }, () => newBulkRow())));
+    }
+  };
+
+  const syncBulkRows = (count) => {
+    const n = Math.max(1, Math.min(maxBulk, count));
+    setBulkCount(n);
+    setBulkNames((current) => {
+      if (current.length === n) return current;
+      if (current.length > n) return current.slice(0, n);
+      return [...current, ...Array.from({ length: n - current.length }, () => newBulkRow())];
+    });
+  };
+
+  /** Roll `count` fresh, reserved names and replace the name rows with them. */
+  const rollNames = async (count) => {
+    setRolling(true);
+    setCreateError('');
+    try {
+      const result = await api('/usernames/generate-batch', {
+        method: 'POST',
+        body: JSON.stringify({ count }),
+      });
+      setBulkNames((result.usernames || []).map((entry) => newBulkRow(entry.username, entry.inspiredBy || '')));
+      if (result.partial) {
+        toast(`Rolled ${result.usernames.length} of ${count} — Mojang throttled the rest, roll the remainder again`, 'warning');
+      } else {
+        toast(`Rolled ${result.usernames.length} fresh, reserved names`, 'success');
+      }
+    } catch (reason) {
+      setCreateError(reason.message);
+    } finally {
+      setRolling(false);
+    }
+  };
+
+  const rerollOne = async (key) => {
+    setRerolling(key);
+    try {
+      const result = await api('/usernames/generate', { method: 'POST' });
+      setBulkNames((current) => current.map((row) => (row.key === key
+        ? { ...row, username: result.username, inspiredBy: result.inspiredBy || '' }
+        : row)));
+    } catch (reason) {
+      toast(reason.message, 'error');
+    } finally {
+      setRerolling('');
+    }
+  };
+
+  /** Shared settings payload used by bulk creation (single mode builds its own). */
+  const buildBulkDefaults = () => {
+    const defaults = {
+      category: form.category.trim() || UNCATEGORIZED,
+      host: form.host.trim() || 'play.bananasmp.net',
+      port: Number(form.port) || 25565,
+      version: form.version.trim() || '1.20.1',
+      auth: form.auth,
+      autoReconnect: form.autoReconnect,
+      reconnectDelay: Math.round((Number(form.reconnectDelaySec) || 5) * 1000),
+      afkMode: form.afkMode,
+      autoRegister: form.autoRegister,
+      autoLogin: form.autoLogin,
+      webhookUrl: form.webhookUrl.trim(),
+      discord: {
+        enabled: form.discordEnabled,
+        token: form.discordToken.trim(),
+        guildId: form.discordGuildId.trim(),
+      },
+      boneCollector: {
+        collectSlot: Number(form.collectSlot) || 13,
+        cycleDelay: Math.round((Number(form.cycleDelaySec) || 15) * 1000),
+      },
+      startOnCreate: form.startOnCreate,
+    };
+    if (form.proxyId === 'auto') defaults.autoProxy = true;
+    else if (form.proxyId) defaults.proxyId = form.proxyId;
+    if (form.loginPassword) defaults.loginPassword = form.loginPassword;
+    if (isAdmin && form.ownerId) defaults.ownerId = form.ownerId;
+    return defaults;
+  };
+
+  const createBulk = async () => {
+    if (!bulkValid || bulkCreating || atBotLimit) return;
+    setBulkCreating(true);
+    setCreateError('');
+    try {
+      const result = await api('/bots/batch', {
+        method: 'POST',
+        body: JSON.stringify({
+          defaults: buildBulkDefaults(),
+          bots: bulkNames.map((row) => ({ username: row.username.trim() })),
+        }),
+      });
+      const made = result.created || [];
+      const fails = result.failed || [];
+      if (made.length) saveLastBotConfig(form, made[made.length - 1].id);
+      if (fails.length) {
+        toast(`${made.length} created · ${fails.length} failed (${fails[0].username}: ${fails[0].reason})`, 'warning');
+      } else {
+        toast(`${made.length} bots created${form.startOnCreate ? ' and starting' : ''}`, 'success');
+      }
+      setCreateOpen(false);
+      fleet.reload();
+      if (made[0]) setSelected(made[0].id);
+    } catch (reason) {
+      setCreateError(reason.message);
+    } finally {
+      setBulkCreating(false);
+    }
+  };
+
   const proxyOptions = useMemo(
     () => withLiveProxyUsage(proxies.data || [], fleet.bots, !fleet.loading),
     [proxies.data, fleet.bots, fleet.loading]
   );
+
+  /** Live pool totals shown next to the proxy picker. */
+  const poolSummary = useMemo(() => {
+    const rows = proxyOptions || [];
+    const free = rows.reduce((sum, proxy) => sum + (Number(proxy.freeSlots) || 0), 0);
+    return { total: rows.length, free };
+  }, [proxyOptions]);
+
+  /** Bulk creation is capped by batch size (10) and the account quota. */
+  const maxBulk = isAdmin ? 10 : Math.max(1, Math.min(10, 10 - fleet.bots.length));
+  const bulkAllowed = !atBotLimit && maxBulk > 1;
+
+  /** Per-row validation: format, fleet collisions, and in-batch duplicates. */
+  const bulkValidation = useMemo(() => {
+    const fleetNames = new Set(
+      (fleet.bots || []).map((bot) => String(bot.config?.username || '').toLowerCase())
+    );
+    const seen = new Set();
+    return bulkNames.map((row) => {
+      const name = row.username.trim();
+      if (!name) return 'Empty — roll a name or type one in';
+      if (!MINECRAFT_USERNAME.test(name)) return 'Use 3-16 letters, numbers, or underscores';
+      const lower = name.toLowerCase();
+      if (fleetNames.has(lower)) return 'Already used by another bot';
+      if (seen.has(lower)) return 'Duplicate name in this batch';
+      seen.add(lower);
+      return '';
+    });
+  }, [bulkNames, fleet.bots]);
+  const bulkValid = bulkNames.length > 0 && bulkNames.length <= maxBulk && bulkValidation.every((issue) => !issue);
 
   const recatCount = (recatIds || checkedIds).length;
 
@@ -1309,17 +1485,25 @@ export default function BotsPage() {
       <Modal
         open={createOpen}
         onClose={() => setCreateOpen(false)}
-        title="New bot"
-        description="Everything here can be changed later in the bot's Configuration tab."
+        title={createMode === 'bulk' ? `New bots · ${bulkNames.length}` : 'New bot'}
+        description={createMode === 'bulk'
+          ? 'One shared configuration, one name per bot, proxies spread automatically.'
+          : "Everything here can be changed later in the bot's Configuration tab."}
         wide
         footer={
           <>
             <Button variant="ghost" onClick={() => setCreateOpen(false)}>
               Cancel
             </Button>
-            <Button variant="primary" loading={creating} disabled={atBotLimit} onClick={createBot}>
-              Create bot
-            </Button>
+            {createMode === 'bulk' ? (
+              <Button variant="primary" loading={bulkCreating} disabled={atBotLimit || !bulkValid} onClick={createBulk}>
+                {bulkCreating ? 'Creating…' : `Create ${bulkNames.length} bot${bulkNames.length === 1 ? '' : 's'}`}
+              </Button>
+            ) : (
+              <Button variant="primary" loading={creating} disabled={atBotLimit} onClick={createBot}>
+                Create bot
+              </Button>
+            )}
           </>
         }
       >
@@ -1333,6 +1517,40 @@ export default function BotsPage() {
           ) : null}
 
           {createError ? <ErrorNote>{createError}</ErrorNote> : null}
+
+          {bulkAllowed ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="inline-flex rounded-xl border border-white/10 bg-white/[0.03] p-1">
+                <button
+                  type="button"
+                  onClick={() => switchCreateMode('single')}
+                  className={cn(
+                    'inline-flex items-center gap-1.5 rounded-lg px-3.5 py-1.5 text-xs font-semibold transition',
+                    createMode === 'single' ? 'bg-white text-black' : 'text-white/50 hover:text-white'
+                  )}
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  Single bot
+                </button>
+                <button
+                  type="button"
+                  onClick={() => switchCreateMode('bulk')}
+                  className={cn(
+                    'inline-flex items-center gap-1.5 rounded-lg px-3.5 py-1.5 text-xs font-semibold transition',
+                    createMode === 'bulk' ? 'bg-white text-black' : 'text-white/50 hover:text-white'
+                  )}
+                >
+                  <Dices className="h-3.5 w-3.5" />
+                  Bulk · up to {maxBulk}
+                </button>
+              </div>
+              {createMode === 'bulk' && !isAdmin ? (
+                <span className="text-[11px] text-white/35">
+                  {10 - fleet.bots.length} of 10 account slots left
+                </span>
+              ) : null}
+            </div>
+          ) : null}
 
           {loadLastBotConfig() ? (
             <div className="flex items-center justify-between rounded-xl border border-white/10 bg-white/[0.03] px-3.5 py-2 text-xs">
@@ -1354,6 +1572,8 @@ export default function BotsPage() {
           ) : null}
 
           <div className="grid gap-4 sm:grid-cols-2">
+            {createMode === 'single' ? (
+              <>
             <Field label="Bot ID" hint="Auto-generated unique process identifier. Editable if needed.">
               <Input
                 value={form.id}
@@ -1395,6 +1615,95 @@ export default function BotsPage() {
                 </Button>
               </div>
             </Field>
+              </>
+            ) : (
+              <div className="space-y-3 sm:col-span-2">
+                <div className="flex flex-wrap items-center gap-2.5 rounded-xl border border-white/10 bg-white/[0.03] p-3">
+                  <div className="inline-flex items-center gap-0.5 rounded-lg border border-white/10 bg-black/40 p-0.5">
+                    <button
+                      type="button"
+                      onClick={() => syncBulkRows(bulkCount - 1)}
+                      disabled={bulkCount <= 1 || rolling || bulkCreating}
+                      aria-label="Fewer bots"
+                      className="rounded-md p-1.5 text-white/60 transition hover:bg-white/10 hover:text-white disabled:opacity-30"
+                    >
+                      <Minus className="h-3.5 w-3.5" />
+                    </button>
+                    <span className="tnum min-w-[4.5rem] text-center text-xs font-bold text-white">
+                      {bulkCount} bot{bulkCount === 1 ? '' : 's'}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => syncBulkRows(bulkCount + 1)}
+                      disabled={bulkCount >= maxBulk || rolling || bulkCreating}
+                      aria-label="More bots"
+                      className="rounded-md p-1.5 text-white/60 transition hover:bg-white/10 hover:text-white disabled:opacity-30"
+                    >
+                      <Plus className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={() => rollNames(bulkCount)}
+                    loading={rolling}
+                    disabled={bulkCreating}
+                    title="Roll fresh, verified-unregistered names for every row"
+                  >
+                    <Dices className="h-3.5 w-3.5" />
+                    Roll {bulkCount} name{bulkCount === 1 ? '' : 's'}
+                  </Button>
+                  <span className="text-[11px] text-white/35">
+                    Verified unregistered &amp; reserved as you roll · bot IDs auto-assigned
+                  </span>
+                </div>
+                <div className="max-h-72 space-y-2 overflow-y-auto pr-1">
+                  {bulkNames.map((row, index) => {
+                    const issue = bulkValidation[index] || '';
+                    const busy = rerolling === row.key;
+                    return (
+                      <div key={row.key}>
+                        <div className="flex items-center gap-2">
+                          <span className="tnum w-6 shrink-0 text-right text-[11px] text-white/30">
+                            {index + 1}
+                          </span>
+                          <Input
+                            value={row.username}
+                            maxLength={16}
+                            placeholder="miner_01"
+                            aria-label={`Bot ${index + 1} username`}
+                            disabled={rolling || bulkCreating}
+                            onChange={(event) => {
+                              const value = event.target.value;
+                              setBulkNames((current) => current.map((entry) => (entry.key === row.key
+                                ? { ...entry, username: value, inspiredBy: '' }
+                                : entry)));
+                            }}
+                            className={cn('min-w-0 flex-1 font-mono', issue && 'border-white/40 bg-white/[0.05]')}
+                          />
+                          <button
+                            type="button"
+                            onClick={() => rerollOne(row.key)}
+                            disabled={busy || rolling || bulkCreating}
+                            title="Re-roll this name"
+                            className="shrink-0 rounded-lg border border-white/10 bg-white/[0.03] p-2 text-white/50 transition hover:border-white/30 hover:text-white disabled:opacity-40"
+                          >
+                            <Dices className={cn('h-3.5 w-3.5', busy && 'animate-spin')} />
+                          </button>
+                        </div>
+                        {issue ? (
+                          <p className="mt-1 pl-8 text-[11px] text-white/55">{issue}</p>
+                        ) : row.inspiredBy ? (
+                          <p className="mt-1 pl-8 text-[11px] text-white/30">
+                            Reserved · inspired by {row.inspiredBy}
+                          </p>
+                        ) : null}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
             <Field label="Category" hint="Groups the bot in the roster and in permissions.">
               <Input
                 value={form.category}
@@ -1422,8 +1731,18 @@ export default function BotsPage() {
                 <option value="microsoft">Microsoft</option>
               </Select>
             </Field>
-            <Field label="Proxy endpoint" hint="Leave unassigned to connect directly.">
+            <Field
+              label="Proxy endpoint"
+              hint={form.proxyId === 'auto'
+                ? (poolSummary.total
+                  ? `Smart spread across ${poolSummary.total} ${poolSummary.total === 1 ? 'proxy' : 'proxies'} · ${poolSummary.free} free slots · falls back to direct when full.`
+                  : 'Pool is empty — creates with a direct connection for now.')
+                : form.proxyId
+                  ? 'Pinned to this endpoint.'
+                  : 'No proxy — connects straight from the panel host.'}
+            >
               <Select value={form.proxyId} onChange={(event) => setForm({ ...form, proxyId: event.target.value })}>
+                <option value="auto">Auto — least-loaded endpoint (recommended)</option>
                 <option value="">Direct connection</option>
                 {proxyOptions.map((proxy) => (
                   <option key={proxy.id} value={proxy.id} disabled={proxy.freeSlots <= 0}>

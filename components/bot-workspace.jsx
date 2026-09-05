@@ -2,14 +2,13 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
-import { ArrowLeft, Gem, Play, Plus, RefreshCw, RotateCcw, Send, Square, Trash2 } from 'lucide-react';
+import { ArrowLeft, Check, Copy, Gem, Play, Plus, RefreshCw, RotateCcw, Send, Server, Square, Trash2 } from 'lucide-react';
 import { useToast } from '@/components/providers';
 import {
   Button,
   Checkbox,
   EmptyState,
   Modal,
-  PageHeader,
   Panel,
   Spinner,
   StatusBadge,
@@ -41,6 +40,28 @@ const TABS = [
   { value: 'scripts', label: 'Scripts' },
 ];
 
+/** Short, credential-free egress label: masked host:port, or direct/proxied. */
+function egressLabel(config) {
+  const raw = typeof config.proxy === 'string' ? config.proxy.trim() : '';
+  if (raw) {
+    let text = raw.replace(/^socks(5h?|4a?)?:\/\//i, '');
+    const at = text.lastIndexOf('@');
+    if (at !== -1) text = text.slice(at + 1);
+    const parts = text.split(':').filter(Boolean);
+    return parts.length >= 2 ? `${parts[0]}:${parts[1]}` : text;
+  }
+  return config.proxyId ? 'proxied' : 'direct';
+}
+
+function Chip({ label, children }) {
+  return (
+    <span className="inline-flex items-center gap-2 whitespace-nowrap rounded-xl border border-white/10 bg-white/[0.03] px-3 py-1.5 text-xs text-white/70">
+      <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-white/30">{label}</span>
+      <span className="font-mono text-[12px] text-white/85">{children}</span>
+    </span>
+  );
+}
+
 /**
  * The complete single-bot workspace: console, configuration, inventory,
  * modules, and scripts.
@@ -64,6 +85,23 @@ export function BotWorkspace({ botId: botIdProp, onDeleted, backHref, fleetBots,
   const [busy, setBusy] = useState('');
   const [deleting, setDeleting] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const copyAddress = async (text) => {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch (_) {
+      const area = document.createElement('textarea');
+      area.value = text;
+      document.body.appendChild(area);
+      area.select();
+      try { document.execCommand('copy'); } catch (_) {}
+      area.remove();
+    }
+    setCopied(true);
+    toast('Server address copied', 'success');
+    setTimeout(() => setCopied(false), 1600);
+  };
 
   const lifecycle = async (action) => {
     setBusy(action);
@@ -130,25 +168,55 @@ export function BotWorkspace({ botId: botIdProp, onDeleted, backHref, fleetBots,
         </div>
       ) : null}
 
-      <PageHeader
-        eyebrow={config.category || 'Uncategorized'}
-        title={config.username || botId}
-        description={`${config.host || 'unknown host'}:${config.port || 25565} · ${config.version || '?'} · ${
-          config.auth === 'microsoft' ? 'Microsoft auth' : 'offline auth'
-        }`}
-        actions={
-          <>
+      <header className="relative overflow-hidden rounded-[26px] border border-white/[0.09] bg-white/[0.02] p-6 backdrop-blur-xl">
+        <div className="spotlight pointer-events-none absolute inset-0" />
+        <div className="pointer-events-none absolute -right-24 -top-24 h-56 w-56 rounded-full bg-white/[0.05] blur-3xl" />
+        <div className="relative">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="inline-flex items-center whitespace-nowrap rounded-full border border-white/15 bg-white/[0.05] px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-white/60">
+              {config.category || 'Uncategorized'}
+            </span>
             <StatusBadge status={status} />
             {effectiveShards !== null && effectiveShards !== undefined ? (
               <span
                 title={`${Number(effectiveShards).toLocaleString()} shards`}
-                className="inline-flex items-center gap-1.5 rounded-xl border border-white/20 bg-white/[0.08] px-3 py-1.5 text-xs font-semibold text-white shadow-[0_0_12px_rgba(255,255,255,0.15)]"
+                className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border border-white/20 bg-white/[0.08] px-3 py-1 text-xs font-semibold text-white shadow-[0_0_12px_rgba(255,255,255,0.15)]"
               >
                 <Gem className="h-3.5 w-3.5 text-white/70" />
                 <span>{Number(effectiveShards).toLocaleString()} shards</span>
               </span>
             ) : null}
+            <span className="flex-1" />
             <LiveDot live={stream.live} label="Console" />
+          </div>
+
+          <h1 className="display text-gradient mt-4 break-all text-[30px] leading-none sm:text-[38px]">
+            {config.username || botId}
+          </h1>
+          <p className="mt-2 font-mono text-[11px] text-white/30">
+            {botId}
+            {bot?.ownerLabel ? ` · ${bot.ownerLabel}` : ''}
+          </p>
+
+          <div className="mt-4 flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => copyAddress(`${config.host || ''}:${config.port || 25565}`)}
+              title="Copy server address"
+              className="inline-flex items-center gap-2 whitespace-nowrap rounded-xl border border-white/10 bg-white/[0.03] px-3 py-1.5 text-xs text-white/70 transition hover:border-white/25 hover:text-white"
+            >
+              <Server className="h-3.5 w-3.5 text-white/40" />
+              <span className="font-mono text-[12px] text-white/85">
+                {config.host || 'unknown host'}:{config.port || 25565}
+              </span>
+              {copied ? <Check className="h-3.5 w-3.5 text-white" /> : <Copy className="h-3.5 w-3.5 text-white/30" />}
+            </button>
+            <Chip label="Version">{config.version || '?'}</Chip>
+            <Chip label="Auth">{config.auth === 'microsoft' ? 'Microsoft' : 'Offline'}</Chip>
+            <Chip label="Egress">{egressLabel(config)}</Chip>
+          </div>
+
+          <div className="mt-5 flex flex-wrap items-center gap-2 border-t border-white/[0.07] pt-4">
             {isRunning ? (
               <Button variant="secondary" loading={busy === 'stop'} onClick={() => lifecycle('stop')}>
                 <Square className="h-3.5 w-3.5" />
@@ -168,9 +236,9 @@ export function BotWorkspace({ botId: botIdProp, onDeleted, backHref, fleetBots,
               <Trash2 className="h-3.5 w-3.5" />
               Delete
             </Button>
-          </>
-        }
-      />
+          </div>
+        </div>
+      </header>
 
       <Tabs items={TABS} value={tab} onChange={setTab} />
 
@@ -417,8 +485,9 @@ function ConfigTab({ botId, bot, onSaved, fleetBots, fleetLoading }) {
           <Field label="Category">
             <Input value={form.category} onChange={(event) => set({ category: event.target.value })} />
           </Field>
-          <Field label="Egress proxy" hint="Clearing this returns the bot to a direct connection.">
+          <Field label="Egress proxy" hint="Auto moves this bot onto the least-loaded endpoint. Clearing it returns to a direct connection.">
             <Select value={form.proxyId} onChange={(event) => set({ proxyId: event.target.value })}>
+              <option value="auto">Auto — least-loaded endpoint</option>
               <option value="">Direct connection</option>
               {proxyRows.map((proxy) => (
                 <option key={proxy.id} value={proxy.id} disabled={proxy.freeSlots <= 0 && proxy.id !== form.proxyId}>

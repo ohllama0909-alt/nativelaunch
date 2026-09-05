@@ -849,6 +849,37 @@ function proxyAssignments(state) {
     return map;
 }
 
+/**
+ * Pick the best pool endpoint for a new bot: the least-loaded proxy with a
+ * free slot, preferring verified-healthy endpoints over never-checked ones
+ * over known-dead ones (dead endpoints still qualify as a last resort so a
+ * bot is never stranded while the pool is unhealthy). Returns the pool
+ * record, or null when the pool is empty or every slot is taken.
+ */
+function selectBestProxy(state, user, ownerId) {
+    const assignMap = proxyAssignments(state);
+    const loadOf = (rec) => (assignMap.get(`${String(rec.host).toLowerCase()}:${rec.port}`) || []).length;
+    const latencyOf = (rec) => (rec.lastCheck && Number.isFinite(Number(rec.lastCheck.ms)) ? Number(rec.lastCheck.ms) : Infinity);
+    const tierOf = (rec) => {
+        if (rec.lastCheck && rec.lastCheck.ok) return 0;
+        if (!rec.lastCheck) return 1;
+        return 2;
+    };
+    const candidates = proxies.listFor(user).filter((rec) => {
+        // Same ownership rule as explicit assignment: an admin seeding another
+        // account may only use unowned or target-owned endpoints.
+        if (user.role === 'admin' && ownerId && rec.owner && rec.owner !== ownerId) return false;
+        return loadOf(rec) < PROXY_MAX_BOTS;
+    });
+    candidates.sort((a, b) =>
+        tierOf(a) - tierOf(b) ||
+        loadOf(a) - loadOf(b) ||
+        latencyOf(a) - latencyOf(b) ||
+        String(a.id).localeCompare(String(b.id))
+    );
+    return candidates[0] || null;
+}
+
 /** Shape a pool record for the client, including derived assignment info. */
 function proxyDto(rec, assignMap, viewer = null, visibleIds = null) {
     const key = `${String(rec.host).toLowerCase()}:${rec.port}`;
@@ -1048,6 +1079,33 @@ async function handleHttp(req, res, state) {
                 reason: error.message || 'Could not generate a username right now'
             });
         }
+    }
+
+    // Roll up to 10 fresh names in one call for bulk creation. Each roll is
+    // reserved immediately, so the batch can never collide with itself.
+    if (req.method === 'POST' && p === '/api/usernames/generate-batch') {
+        const user = currentUser(req);
+        const body = await readJson(req).catch(() => ({}));
+        const count = Math.max(0, Math.min(10, parseInt(body.count, 10) || 0));
+        if (!count) return json(res, 400, { ok: false, reason: 'Count must be between 1 and 10' });
+        const excluded = (state.bots || []).map(bot => bot.config && bot.config.username);
+        const usernames = [];
+        try {
+            for (let i = 0; i < count; i++) {
+                const suggestion = await usernameGenerator.generate({ ownerId: user.id, excluded });
+                usernames.push(suggestion);
+                excluded.push(suggestion.username);
+            }
+        } catch (error) {
+            if (!usernames.length) {
+                const unavailable = ['UPSTREAM_RATE_LIMIT', 'UPSTREAM_UNAVAILABLE', 'UPSTREAM_INVALID'].includes(error.code);
+                return json(res, unavailable ? 503 : 409, {
+                    ok: false,
+                    reason: error.message || 'Could not generate usernames right now'
+                });
+            }
+        }
+        return json(res, 200, { ok: true, usernames, requested: count, partial: usernames.length < count });
     }
 
     // ── Account workspace ───────────────────────────────────────────
@@ -1630,7 +1688,19 @@ async function handleHttp(req, res, state) {
             }
         }
 
-        if (body.proxyId) {
+        // Proxy resolution: explicit pool pick, smart auto-assign, or direct.
+        let assignedProxy = null;
+        let proxyNote = '';
+        const wantAutoProxy = body.autoProxy === true || String(body.proxyId || '') === 'auto';
+        if (wantAutoProxy) {
+            const rec = selectBestProxy(state, user, ownerId);
+            if (rec) {
+                body.proxy = proxyToUri(rec);
+                assignedProxy = { id: rec.id, label: proxyToLabel(rec) };
+            } else {
+                proxyNote = 'Proxy pool is empty or full — created with a direct connection.';
+            }
+        } else if (body.proxyId) {
             const rec = proxies.get(String(body.proxyId));
             if (!rec || (user.role !== 'admin' && rec.owner !== user.id) || (user.role === 'admin' && rec.owner && rec.owner !== ownerId)) {
                 return json(res, 400, { ok: false, reason: 'Proxy is not available to this account' });
@@ -1640,6 +1710,7 @@ async function handleHttp(req, res, state) {
                 return json(res, 409, { ok: false, reason: 'That proxy has no slots left. Pick another endpoint.' });
             }
             body.proxy = proxyToUri(rec);
+            assignedProxy = { id: rec.id, label: proxyToLabel(rec) };
         }
         const config = buildConfigFromBody(body, id);
 
@@ -1656,7 +1727,139 @@ async function handleHttp(req, res, state) {
         try { usernameGenerator.reserve(config.username, ownerId, { source: 'bot-created' }); } catch (_) { }
         saveBotsFile(state);
         broadcastGlobal(viewer => ({ type: 'bot-added', bot: publicBot(bot, viewer) }), state);
-        return json(res, 200, { ok: true, bot: publicBot(bot, user) });
+        return json(res, 200, { ok: true, bot: publicBot(bot, user), assignedProxy, proxyNote });
+    }
+
+    // Bulk create: roll N bots at once with shared settings. Each bot is
+    // committed to state before the next one picks a proxy, so auto-assign
+    // spreads the batch across the pool (10 proxies + 10 bots = all
+    // distinct; a 13th bot doubles up on the least-loaded endpoint).
+    if (req.method === 'POST' && p === '/api/bots/batch') {
+        const user = currentUser(req);
+        const body = await readJson(req).catch(() => ({}));
+        const defaults = (body && typeof body.defaults === 'object' && body.defaults) || {};
+        const rows = Array.isArray(body.bots) ? body.bots : [];
+        if (!rows.length || rows.length > 10) {
+            return json(res, 400, { ok: false, reason: 'Provide between 1 and 10 bots' });
+        }
+        let ownerId = user.id;
+        if (user.role === 'admin' && defaults.ownerId) {
+            if (!users.findById(defaults.ownerId)) return json(res, 400, { ok: false, reason: 'Unknown owner' });
+            ownerId = defaults.ownerId;
+        }
+        const targetOwner = users.findById(ownerId) || user;
+        if (targetOwner.role !== 'admin') {
+            const ownedCount = state.bots.filter(b => b.ownerId === ownerId).length;
+            if (ownedCount + rows.length > MAX_BOTS_PER_ACCOUNT) {
+                return json(res, 403, {
+                    ok: false,
+                    reason: `Only ${Math.max(0, MAX_BOTS_PER_ACCOUNT - ownedCount)} bot slot(s) left on this account.`
+                });
+            }
+        }
+
+        // Validate every row before creating anything.
+        const takenUsernames = new Set((state.bots || []).map(b => String(b.config && b.config.username).toLowerCase()));
+        const usedIds = new Set((state.bots || []).map(b => b.id));
+        const batchUsernames = new Set();
+        const planned = [];
+        const failed = [];
+        for (const row of rows) {
+            const username = String((row && row.username) || '').trim();
+            if (!/^[A-Za-z0-9_]{3,16}$/.test(username)) {
+                failed.push({ username: username || '(blank)', reason: 'Usernames must be 3-16 letters, numbers, or underscores' });
+                continue;
+            }
+            const lower = username.toLowerCase();
+            if (takenUsernames.has(lower) || batchUsernames.has(lower)) {
+                failed.push({ username, reason: 'Username already used by another bot' });
+                continue;
+            }
+            let id = row && row.id ? String(row.id).trim() : '';
+            if (id) {
+                if (!/^[a-zA-Z0-9_-]{1,24}$/.test(id) || usedIds.has(id)) {
+                    failed.push({ username, reason: `Bot ID "${id}" is invalid or already taken` });
+                    continue;
+                }
+            } else {
+                id = nextBotId({ bots: [...usedIds].map(used => ({ id: used })) });
+            }
+            usedIds.add(id);
+            batchUsernames.add(lower);
+            planned.push({ id, username });
+        }
+        if (!planned.length) {
+            return json(res, 400, { ok: false, reason: 'No valid bots to create', failed });
+        }
+
+        const wantAuto = defaults.autoProxy === true || String(defaults.proxyId || '') === 'auto';
+        let explicitRec = null;
+        if (!wantAuto && defaults.proxyId) {
+            explicitRec = proxies.get(String(defaults.proxyId));
+            if (!explicitRec || (user.role !== 'admin' && explicitRec.owner !== user.id) || (user.role === 'admin' && explicitRec.owner && explicitRec.owner !== ownerId)) {
+                return json(res, 400, { ok: false, reason: 'Proxy is not available to this account' });
+            }
+        }
+
+        const created = [];
+        for (const item of planned) {
+            let proxyUri = null;
+            let itemProxy = null;
+            if (wantAuto) {
+                // State already holds this batch's earlier bots, so each pick
+                // sees their load and the batch fans out across the pool.
+                const rec = selectBestProxy(state, user, ownerId);
+                if (rec) {
+                    proxyUri = proxyToUri(rec);
+                    itemProxy = { id: rec.id, label: proxyToLabel(rec) };
+                }
+            } else if (explicitRec) {
+                const key = `${String(explicitRec.host).toLowerCase()}:${explicitRec.port}`;
+                if (((proxyAssignments(state).get(key) || []).length) >= PROXY_MAX_BOTS) {
+                    failed.push({ username: item.username, reason: 'That proxy has no slots left' });
+                    continue;
+                }
+                proxyUri = proxyToUri(explicitRec);
+                itemProxy = { id: explicitRec.id, label: proxyToLabel(explicitRec) };
+            }
+            const merged = { ...defaults, username: item.username };
+            if (proxyUri) merged.proxy = proxyUri;
+            const config = buildConfigFromBody(merged, item.id);
+            if (config.proxy && user.role !== 'admin') {
+                const known = proxies.findByUri(config.proxy);
+                if (!known || !proxies.canAccess(user, known)) {
+                    failed.push({ username: item.username, reason: 'Proxy is not in your pool' });
+                    continue;
+                }
+            }
+            const bot = { id: item.id, ownerId, config };
+            state.bots.push(bot);
+            try { usernameGenerator.reserve(config.username, ownerId, { source: 'bot-batch' }); } catch (_) { }
+            broadcastGlobal(viewer => ({ type: 'bot-added', bot: publicBot(bot, viewer) }), state);
+            created.push({ bot, assignedProxy: itemProxy });
+        }
+        if (created.length) saveBotsFile(state);
+
+        // Staggered starts so a full batch doesn't thundering-herd the server.
+        let startRequested = 0;
+        if (defaults.startOnCreate !== false) {
+            created.forEach(({ bot }, index) => {
+                startRequested++;
+                setTimeout(() => {
+                    const still = state.bots.find(b => b.id === bot.id);
+                    if (still) startBot(state, still);
+                }, index * 600);
+            });
+        }
+        if (!created.length) {
+            return json(res, 400, { ok: false, reason: 'No bots could be created', failed });
+        }
+        return json(res, 200, {
+            ok: true,
+            created: created.map(({ bot, assignedProxy }) => ({ ...publicBot(bot, user), assignedProxy })),
+            failed,
+            started: startRequested
+        });
     }
 
     if (req.method === 'DELETE' && p === '/api/bots') {
@@ -1848,7 +2051,11 @@ async function handleHttp(req, res, state) {
             // the bot dials and keep both fields in sync. Empty id clears it.
             if (body.proxyId !== undefined) {
                 const pid = String(body.proxyId || '').trim();
-                if (pid) {
+                if (pid === 'auto') {
+                    // Rebalance: move this bot onto the least-loaded endpoint.
+                    const rec = selectBestProxy(state, user, bot.ownerId);
+                    body.proxy = rec ? proxyToUri(rec) : null;
+                } else if (pid) {
                     const rec = proxies.get(pid);
                     if (!rec || !proxies.canAccess(user, rec)) {
                         return json(res, 400, { ok: false, reason: 'Proxy is not in your pool' });
