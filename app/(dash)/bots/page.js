@@ -8,9 +8,9 @@
  * components/bot-workspace.jsx so that this page and the /bots/[id] deep link
  * render exactly the same thing.
  *
- * Broadcasts are composed in the always-on floating BroadcastDock (⌘K):
- * everyone, whole categories, the checked roster selection, or hand-picked
- * bots - with category + bot exclusions and stagger control.
+ * Broadcasts are composed in the BroadcastModal (⌘K): everyone, whole
+ * categories, the checked roster selection, or hand-picked bots - with
+ * category + bot exclusions and stagger control.
  */
 
 import { useEffect, useMemo, useState } from 'react';
@@ -37,7 +37,7 @@ import { useAuth, useToast } from '@/components/providers';
 import { Button, Checkbox, EmptyState, Modal, Spinner } from '@/components/ui';
 import { ConfirmModal, ErrorNote, Field, Input, LiveDot, Select } from '@/components/dash-ui';
 import { BotWorkspace } from '@/components/bot-workspace';
-import { BroadcastDock } from '@/components/broadcast-dock';
+import { BroadcastModal } from '@/components/broadcast-modal';
 import { useFleet, useResource } from '@/lib/hooks';
 import { api, cn } from '@/lib/api';
 import { withLiveProxyUsage } from '@/lib/format';
@@ -236,7 +236,7 @@ export default function BotsPage() {
     inspiredBy,
   });
 
-  // Fired into the floating BroadcastDock: { key, botIds?, includeCategories?, useSelected? }
+  // Fired into the BroadcastModal: { key, botIds?, includeCategories?, useSelected? }
   const [castPreset, setCastPreset] = useState({ key: 0 });
   const firePreset = (patch = {}) => setCastPreset({ key: Date.now(), ...patch });
 
@@ -764,10 +764,16 @@ export default function BotsPage() {
                 Delete {checkedBots.size}
               </Button>
             ) : null}
-            <Button variant="secondary" onClick={() => firePreset({})} disabled={!runningTotal} title="Open the floating broadcast composer (Ctrl/⌘+K)">
+            <Button variant="secondary" onClick={() => firePreset({})} disabled={!runningTotal} title="Open broadcast (Ctrl/⌘+K)">
               <Send className="h-3.5 w-3.5" />
               Broadcast
-              <kbd className="kbd hidden sm:inline-block">⌘K</kbd>
+              {fleet.activeJob?.status === 'running' && fleet.activeJob.total ? (
+                <span className="tnum text-[11px] text-white/55">
+                  {fleet.activeJob.done || 0}/{fleet.activeJob.total}
+                </span>
+              ) : (
+                <kbd className="kbd hidden sm:inline-block">⌘K</kbd>
+              )}
             </Button>
             <Button
               variant="primary"
@@ -1392,8 +1398,8 @@ export default function BotsPage() {
         </div>
       </div>
 
-      {/* Floating always-on broadcast composer */}
-      <BroadcastDock
+      {/* Broadcast composer (stays mounted so drafts survive closing) */}
+      <BroadcastModal
         bots={fleet.bots}
         activeJob={fleet.activeJob}
         selectedIds={checkedIds}
