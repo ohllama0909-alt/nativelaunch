@@ -39,7 +39,12 @@ export default function LoginPage() {
   };
 
   return (
-    <main className="grid min-h-screen lg:grid-cols-[minmax(0,1fr)_540px]">
+    <main className="relative grid min-h-screen overflow-hidden lg:grid-cols-[minmax(0,1fr)_540px]">
+      <div aria-hidden="true" className="absolute inset-0 -z-10 overflow-hidden">
+        <div className="auri auri-a" />
+        <div className="auri auri-b" />
+        <div className="auri auri-c" />
+      </div>
       {/* Editorial panel */}
       <section className="relative hidden overflow-hidden border-r border-white/[0.07] p-14 lg:flex lg:flex-col lg:justify-between">
         <div className="grid-bg mask-radial absolute inset-0 opacity-70" />

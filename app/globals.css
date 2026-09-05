@@ -6,8 +6,8 @@
    ============================================================ */
 
 @theme {
-  --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system, sans-serif;
-  --font-mono: var(--font-jetbrains), ui-monospace, SFMono-Regular, monospace;
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 
   /* Neutral ramp - overrides Tailwind slate so every existing page
      inherits monochrome without touching its markup. */
@@ -96,6 +96,8 @@
   --txt-4: rgba(255, 255, 255, 0.22);
   --blur: saturate(140%) blur(22px);
   --header-h: 68px;
+  --shadow-deep: 0 30px 90px -24px rgba(0, 0, 0, 0.95);
+  --glow-white: 0 0 30px -8px rgba(255, 255, 255, 0.28);
 }
 
 * { -webkit-tap-highlight-color: transparent; }
@@ -125,6 +127,54 @@ body::after {
   opacity: 0.028;
   mix-blend-mode: overlay;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='200' height='200' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* ---------- Ambient aurora backdrop ---------- */
+.auri {
+  position: absolute;
+  border-radius: 9999px;
+  filter: blur(110px);
+  opacity: 0.16;
+  will-change: transform, opacity;
+  pointer-events: none;
+}
+.auri-a {
+  width: 46rem;
+  height: 46rem;
+  left: -12rem;
+  top: -16rem;
+  background: radial-gradient(circle at 35% 35%, rgba(255, 255, 255, 0.9), transparent 62%);
+  animation: auri-drift-a 26s ease-in-out infinite;
+}
+.auri-b {
+  width: 40rem;
+  height: 40rem;
+  right: -10rem;
+  top: 22%;
+  background: radial-gradient(circle at 60% 40%, rgba(255, 255, 255, 0.55), transparent 60%);
+  opacity: 0.09;
+  animation: auri-drift-b 34s ease-in-out infinite;
+}
+.auri-c {
+  width: 34rem;
+  height: 34rem;
+  left: 32%;
+  bottom: -18rem;
+  background: radial-gradient(circle at 50% 50%, rgba(255, 255, 255, 0.4), transparent 58%);
+  opacity: 0.07;
+  animation: auri-drift-c 40s ease-in-out infinite;
+}
+@keyframes auri-drift-a {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+  50% { transform: translate3d(6rem, 4rem, 0) scale(1.12); }
+}
+@keyframes auri-drift-b {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+  50% { transform: translate3d(-5rem, -6rem, 0) scale(0.94); }
+}
+@keyframes auri-drift-c {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+  50% { transform: translate3d(4rem, -5rem, 0) scale(1.08); }
 }
 
 ::selection { background: #ffffff; color: #000000; }
@@ -162,10 +212,57 @@ body::after {
     backdrop-filter: var(--blur);
     -webkit-backdrop-filter: var(--blur);
     border: 1px solid var(--edge-1);
-    box-shadow: var(--spec), 0 24px 60px -24px rgba(0, 0, 0, 0.9);
-    transition: border-color 0.4s var(--ease-ios), background 0.4s var(--ease-ios);
+    box-shadow: var(--spec), var(--shadow-deep);
+    transition: border-color 0.4s var(--ease-ios), background 0.4s var(--ease-ios), box-shadow 0.4s var(--ease-ios);
   }
-  .panel-surface:hover { border-color: var(--edge-2); }
+  .panel-surface:hover {
+    border-color: var(--edge-2);
+    box-shadow: var(--spec), var(--shadow-deep), var(--glow-white);
+  }
+
+  /* Gradient headline for hero headers */
+  .text-grad {
+    background: linear-gradient(180deg, #ffffff 0%, #ffffff 55%, rgba(255, 255, 255, 0.55) 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  /* Elevated interactive chip */
+  .chip-elevated {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border-radius: 12px;
+    border: 1px solid var(--edge-1);
+    background: rgba(255, 255, 255, 0.03);
+    color: var(--txt-3);
+    transition: all 0.25s var(--ease-ios);
+  }
+  .chip-elevated:hover {
+    border-color: var(--edge-2);
+    background: rgba(255, 255, 255, 0.07);
+    color: #fff;
+  }
+
+  /* Compact icon action button */
+  .icon-mini {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 10px;
+    padding: 6px;
+    color: rgba(255, 255, 255, 0.45);
+    border: 1px solid rgba(255, 255, 255, 0.09);
+    background: rgba(255, 255, 255, 0.03);
+    transition: all 0.2s var(--ease-ios);
+  }
+  .icon-mini:hover {
+    color: #fff;
+    border-color: rgba(255, 255, 255, 0.25);
+    background: rgba(255, 255, 255, 0.08);
+  }
+  .icon-mini:disabled { opacity: 0.35; cursor: not-allowed; }
 
   .glass-hi {
     background: var(--glass-2);

@@ -12,7 +12,7 @@ import { cn } from '@/lib/api';
 
 export function Button({ children, variant = 'secondary', size = 'md', className, loading, disabled, ...props }) {
   const variants = {
-    primary: 'sheen border-white bg-white text-black hover:bg-white/90 active:scale-[.97]',
+    primary: 'sheen border-white bg-white text-black shadow-[0_10px_36px_-10px_rgba(255,255,255,.5)] hover:bg-white/90 active:scale-[.97]',
     secondary: 'border-white/12 bg-white/[0.06] text-white backdrop-blur-xl hover:border-white/25 hover:bg-white/[0.11] active:scale-[.97]',
     ghost: 'border-transparent bg-transparent text-white/45 hover:bg-white/[0.07] hover:text-white active:scale-[.97]',
     danger: 'border-white/25 bg-white/[0.04] text-white hover:border-white hover:bg-white hover:text-black active:scale-[.97]',
@@ -58,20 +58,24 @@ export function IconButton({ label, children, className, ...props }) {
 
 export function PageHeader({ eyebrow, title, description, actions }) {
   return (
-    <header className="anim-rise flex flex-col gap-5 border-b border-white/[0.07] pb-7 sm:flex-row sm:items-end sm:justify-between">
-      <div className="min-w-0">
+    <header className="anim-rise relative flex flex-col gap-5 border-b border-white/[0.07] pb-7 sm:flex-row sm:items-end sm:justify-between">
+      <div className="absolute inset-x-0 bottom-0 h-px bg-gradient-to-r from-transparent via-white/20 to-transparent" />
+      <div className="relative min-w-0">
         {eyebrow && (
           <p className="eyebrow mb-2.5 flex items-center gap-2">
-            <span className="h-1 w-1 rounded-full bg-white/50" />
+            <span className="relative flex h-1.5 w-1.5">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-white/50 opacity-60" />
+              <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-white" />
+            </span>
             {eyebrow}
           </p>
         )}
-        <h1 className="display text-[30px] text-white sm:text-[38px]">{title}</h1>
+        <h1 className="display text-grad text-[32px] sm:text-[40px]">{title}</h1>
         {description && (
-          <p className="mt-3 max-w-2xl text-[15px] leading-relaxed text-white/45">{description}</p>
+          <p className="mt-3.5 max-w-2xl text-[15px] leading-relaxed text-white/45">{description}</p>
         )}
       </div>
-      {actions && <div className="flex shrink-0 flex-wrap items-center gap-2.5">{actions}</div>}
+      {actions && <div className="relative flex shrink-0 flex-wrap items-center gap-2.5">{actions}</div>}
     </header>
   );
 }
@@ -89,18 +93,19 @@ export function StatCard({ label, value, hint, icon, tone = 'default' }) {
     amber: 'bg-white/50',
   };
   return (
-    <Panel className="group relative flex min-h-32 items-start justify-between overflow-hidden p-5">
-      <span className="pointer-events-none absolute inset-x-0 -top-px h-px bg-gradient-to-r from-transparent via-white/35 to-transparent opacity-0 transition-opacity duration-500 group-hover:opacity-100" />
-      <div className="min-w-0">
+    <Panel className="group relative flex min-h-32 items-start justify-between overflow-hidden p-5 transition-transform duration-500 [transition-timing-function:var(--ease-ios)] hover:-translate-y-0.5">
+      <span className="pointer-events-none absolute inset-x-0 -top-px h-px bg-gradient-to-r from-transparent via-white/40 to-transparent opacity-0 transition-opacity duration-500 group-hover:opacity-100" />
+      <span className="pointer-events-none absolute -right-10 -top-10 h-24 w-24 rounded-full bg-white/[0.06] blur-2xl opacity-0 transition-opacity duration-700 group-hover:opacity-100" />
+      <div className="relative min-w-0">
         <p className="flex items-center gap-2 text-[10px] font-medium uppercase tracking-[0.14em] text-white/35">
-          <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', dots[tone] || dots.default)} />
+          <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', dots[tone] || dots.default, tone === 'green' && 'shadow-[0_0_8px_rgba(255,255,255,.9)]', tone === 'red' && 'shadow-[0_0_8px_rgba(255,255,255,.7)]')} />
           <span className="truncate">{label}</span>
         </p>
         <p className="tnum mt-3.5 text-[32px] font-semibold leading-none tracking-[-0.045em] text-white">{value}</p>
         {hint && <p className="mt-2.5 truncate text-xs text-white/35">{hint}</p>}
       </div>
       {icon && (
-        <span className="shrink-0 rounded-xl border border-white/[0.09] bg-white/[0.04] p-2.5 text-white/40 transition-all duration-500 [transition-timing-function:var(--ease-ios)] group-hover:border-white/20 group-hover:text-white">
+        <span className="relative shrink-0 rounded-xl border border-white/[0.09] bg-white/[0.04] p-2.5 text-white/40 transition-all duration-500 [transition-timing-function:var(--ease-ios)] group-hover:border-white/25 group-hover:bg-white/[0.08] group-hover:text-white group-hover:shadow-[0_0_18px_-4px_rgba(255,255,255,.35)]">
           {icon}
         </span>
       )}

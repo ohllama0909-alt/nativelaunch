@@ -1,23 +1,29 @@
 'use client';
 
 /**
- * Bots - split view.
+ * Bots - split view, rebuilt as a fleet command surface.
  *
  * Left rail is the roster grouped by category; the right pane is the full
- * workspace for whichever bot is selected. The workspace itself lives in
- * components/bot-workspace.jsx so that this page and the /bots/[id] deep link
- * render exactly the same thing.
+ * workspace for whichever bot is selected. Broadcasting lives in the always-on
+ * floating Command Deck (components/fleet-dock.jsx) - category-wise targeting,
+ * exclusions, presets and progress all happen there. This page adds fleet
+ * stats, a category rail, a category manager (rename / merge / reassign), and
+ * bulk actions: start, stop, restart, move to category, broadcast, delete.
  */
 
 import { useEffect, useMemo, useState } from 'react';
 import {
   Bot,
-  Check,
   CheckSquare,
   ChevronDown,
+  FolderInput,
   Gem,
+  Layers,
+  Megaphone,
+  MoreHorizontal,
   Play,
   Plus,
+  RefreshCw,
   Search,
   Send,
   Sparkles,
@@ -27,10 +33,11 @@ import {
 } from 'lucide-react';
 import { useAuth, useToast } from '@/components/providers';
 import { Button, Checkbox, EmptyState, Modal, PageHeader, Spinner } from '@/components/ui';
-import { BotPicker, ConfirmModal, ErrorNote, Field, Input, LiveDot, Pill, Select } from '@/components/dash-ui';
+import { ConfirmModal, ErrorNote, Field, Input, LiveDot, Select } from '@/components/dash-ui';
 import { BotWorkspace } from '@/components/bot-workspace';
 import { useFleet, useResource } from '@/lib/hooks';
 import { api, cn } from '@/lib/api';
+import { useFleetDock } from '@/components/fleet-dock';
 import { withLiveProxyUsage } from '@/lib/format';
 
 const UNCATEGORIZED = 'Uncategorized';
@@ -164,10 +171,191 @@ function formatShards(value) {
   return num.toLocaleString();
 }
 
+function sortBots(list, sortBy) {
+  const running = (b) => (b.status === 'running' ? 0 : 1);
+  const name = (b) => String((b.config && b.config.username) || b.id).toLowerCase();
+  const by = {
+    name: (a, b) => name(a).localeCompare(name(b)),
+    id: (a, b) => String(a.id).localeCompare(String(b.id)),
+    status: (a, b) => running(a) - running(b) || name(a).localeCompare(name(b)),
+    shards: (a, b) => (Number(b.shards) || 0) - (Number(a.shards) || 0) || name(a).localeCompare(name(b)),
+  };
+  return [...list].sort(by[sortBy] || by.name);
+}
+
+/* ------------------------------------------------------------------ */
+/* Category manager modal                                              */
+/* ------------------------------------------------------------------ */
+
+function CategoryManagerModal({ open, onClose, groups, busy, onLifecycle, onRename, onMerge, onDelete, onCast }) {
+  const [editing, setEditing] = useState('');
+  const [rename, setRename] = useState('');
+  const [mergeInto, setMergeInto] = useState('');
+
+  useEffect(() => {
+    if (!open) {
+      setEditing('');
+      setMergeInto('');
+    }
+  }, [open]);
+
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      title="Category manager"
+      description="Reorganize the fleet: rename a category, merge it into another, or reassign its bots to Uncategorized. Broadcasting per category lives in the Command Deck."
+      wide
+      footer={
+        <Button variant="ghost" onClick={onClose}>
+          Done
+        </Button>
+      }
+    >
+      <div className="space-y-2">
+        {groups.length === 0 ? (
+          <p className="rounded-xl border border-white/[0.08] bg-white/[0.02] px-4 py-6 text-center text-[13px] text-white/35">
+            No categories yet - create a bot to get started.
+          </p>
+        ) : (
+          groups.map((group) => {
+            const isEditing = editing === group.name;
+            return (
+              <div key={group.name} className="rounded-2xl border border-white/[0.08] bg-white/[0.02] p-3.5">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border border-white/12 bg-white/[0.05] text-white/60">
+                    <Layers className="h-3.5 w-3.5" />
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    {isEditing ? (
+                      <div className="flex items-center gap-2">
+                        <Input
+                          value={rename}
+                          onChange={(e) => setRename(e.target.value)}
+                          placeholder="New category name"
+                          className="h-9 py-1.5 text-[13px]"
+                          autoFocus
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' && rename.trim() && rename.trim() !== group.name) {
+                              onRename(group, rename.trim());
+                              setEditing('');
+                              setRename('');
+                            }
+                            if (e.key === 'Escape') {
+                              setEditing('');
+                              setRename('');
+                            }
+                          }}
+                        />
+                        <Button
+                          size="sm"
+                          className="shrink-0"
+                          disabled={!rename.trim() || rename.trim() === group.name}
+                          onClick={() => {
+                            onRename(group, rename.trim());
+                            setEditing('');
+                            setRename('');
+                          }}
+                        >
+                          Save
+                        </Button>
+                        <Button size="sm" variant="ghost" className="shrink-0" onClick={() => setEditing('')}>
+                          Cancel
+                        </Button>
+                      </div>
+                    ) : (
+                      <>
+                        <p className="truncate text-[13px] font-medium text-white/90">{group.name}</p>
+                        <p className="mt-0.5 text-[11px] text-white/35">
+                          <span className="tnum">{group.bots.length}</span> bot{group.bots.length === 1 ? '' : 's'} ·{' '}
+                          <span className="tnum text-white/55">{group.running}</span> running
+                        </p>
+                      </>
+                    )}
+                  </div>
+
+                  {!isEditing ? (
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        title={`Broadcast to ${group.name}`}
+                        disabled={busy}
+                        onClick={() => onCast(group)}
+                        className="rounded-lg border border-white bg-white px-2.5 py-1.5 text-black shadow-[0_0_14px_-2px_rgba(255,255,255,.4)] transition hover:brightness-95 active:scale-95 disabled:opacity-30"
+                      >
+                        <Megaphone className="h-3.5 w-3.5" />
+                      </button>
+                      <button type="button" title={`Start all in ${group.name}`} disabled={busy} onClick={() => onLifecycle(group, 'start')} className="icon-mini">
+                        <Play className="h-3.5 w-3.5" />
+                      </button>
+                      <button type="button" title={`Stop all in ${group.name}`} disabled={busy} onClick={() => onLifecycle(group, 'stop')} className="icon-mini">
+                        <Square className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        title="Rename category"
+                        onClick={() => {
+                          setEditing(group.name);
+                          setRename(group.name);
+                        }}
+                        className="icon-mini"
+                      >
+                        <FolderInput className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        title="Merge into another category"
+                        onClick={() => setMergeInto(mergeInto === group.name ? '' : group.name)}
+                        className={cn('icon-mini', mergeInto === group.name && 'bg-white text-black')}
+                      >
+                        <span className="text-[11px] font-bold">-&gt;</span>
+                      </button>
+                      <button type="button" title="Reassign to Uncategorized" disabled={busy} onClick={() => onDelete(group)} className="icon-mini text-white/35 hover:text-white">
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
+
+                {mergeInto === group.name ? (
+                  <div className="mt-3 flex flex-wrap items-center gap-2 rounded-xl border border-white/[0.07] bg-white/[0.02] p-2.5">
+                    <span className="text-[11px] text-white/45">Merge <strong className="text-white/80">{group.name}</strong> into</span>
+                    <Select
+                      value=""
+                      className="min-h-0 h-9 py-0 text-[12px]"
+                      onChange={(e) => {
+                        const target = e.target.value;
+                        if (target && target !== group.name) {
+                          onMerge(group, target);
+                          setMergeInto('');
+                        }
+                      }}
+                    >
+                      <option value="" disabled>Choose category…</option>
+                      {groups.filter((g) => g.name !== group.name).map((g) => (
+                        <option key={g.name} value={g.name}>{g.name}</option>
+                      ))}
+                    </Select>
+                  </div>
+                ) : null}
+              </div>
+            );
+          })
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Page                                                                */
+/* ------------------------------------------------------------------ */
+
 export default function BotsPage() {
   const { user } = useAuth();
   const { toast } = useToast();
   const fleet = useFleet();
+  const { openBroadcast } = useFleetDock();
   const proxies = useResource('/proxies', (result) => result.proxies || []);
   const isAdmin = user.role === 'admin';
   const atBotLimit = !isAdmin && fleet.bots.length >= 10;
@@ -176,6 +364,8 @@ export default function BotsPage() {
   const [selected, setSelected] = useState('');
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
+  const [categoryFilter, setCategoryFilter] = useState('all');
+  const [sortBy, setSortBy] = useState('name');
   const [mobileTab, setMobileTab] = useState('roster');
   const [collapsed, setCollapsed] = useState(() => new Set());
   const [groupBusy, setGroupBusy] = useState('');
@@ -185,6 +375,7 @@ export default function BotsPage() {
   const [massDeleteOpen, setMassDeleteOpen] = useState(false);
   const [massDeleting, setMassDeleting] = useState(false);
   const [massActionBusy, setMassActionBusy] = useState('');
+  const [moveCategory, setMoveCategory] = useState('');
 
   const [createOpen, setCreateOpen] = useState(false);
   const [form, setForm] = useState(BLANK_BOT);
@@ -193,9 +384,7 @@ export default function BotsPage() {
   const [generatingName, setGeneratingName] = useState(false);
   const [usernameMeta, setUsernameMeta] = useState(null);
 
-  const [castOpen, setCastOpen] = useState(false);
-  const [cast, setCast] = useState({ cmd: '', staggerSec: '0.25', botIds: [] });
-  const [casting, setCasting] = useState(false);
+  const [catManagerOpen, setCatManagerOpen] = useState(false);
 
   const visible = useMemo(() => {
     const term = search.trim().toLowerCase();
@@ -203,14 +392,38 @@ export default function BotsPage() {
       const config = bot.config || {};
       if (statusFilter === 'running' && bot.status !== 'running') return false;
       if (statusFilter === 'stopped' && bot.status === 'running') return false;
+      const cat = (config.category || UNCATEGORIZED).trim() || UNCATEGORIZED;
+      if (categoryFilter !== 'all' && cat !== categoryFilter) return false;
       if (!term) return true;
       return [bot.id, config.username, config.category, config.host, bot.ownerLabel]
         .filter(Boolean)
         .some((field) => String(field).toLowerCase().includes(term));
     });
-  }, [fleet.bots, search, statusFilter]);
+  }, [fleet.bots, search, statusFilter, categoryFilter]);
 
-  /** Category buckets, alphabetical, with Uncategorized pinned last. */
+  /** Category buckets across the whole fleet (unfiltered, for the manager). */
+  const allGroups = useMemo(() => {
+    const buckets = new Map();
+    for (const bot of fleet.bots) {
+      const name = ((bot.config && bot.config.category) || UNCATEGORIZED).trim() || UNCATEGORIZED;
+      if (!buckets.has(name)) buckets.set(name, []);
+      buckets.get(name).push(bot);
+    }
+    return [...buckets.entries()]
+      .map(([name, items]) => ({
+        name,
+        bots: sortBots(items, 'name'),
+        running: items.filter((bot) => bot.status === 'running').length,
+      }))
+      .sort((a, b) => {
+        if (a.name === b.name) return 0;
+        if (a.name === UNCATEGORIZED) return 1;
+        if (b.name === UNCATEGORIZED) return -1;
+        return a.name.localeCompare(b.name);
+      });
+  }, [fleet.bots]);
+
+  /** Category buckets for the filtered roster view. */
   const groups = useMemo(() => {
     const buckets = new Map();
     for (const bot of visible) {
@@ -221,9 +434,7 @@ export default function BotsPage() {
     return [...buckets.entries()]
       .map(([name, items]) => ({
         name,
-        bots: items.sort((a, b) =>
-          ((a.config && a.config.username) || a.id).localeCompare((b.config && b.config.username) || b.id)
-        ),
+        bots: sortBots(items, sortBy),
         running: items.filter((bot) => bot.status === 'running').length,
       }))
       .sort((a, b) => {
@@ -232,7 +443,7 @@ export default function BotsPage() {
         if (b.name === UNCATEGORIZED) return -1;
         return a.name.localeCompare(b.name);
       });
-  }, [visible]);
+  }, [visible, sortBy]);
 
   // Keep a valid selection: adopt the first visible bot on load, and move on if
   // the selected bot is filtered away or removed by a stream event.
@@ -252,7 +463,7 @@ export default function BotsPage() {
       return next;
     });
 
-  /** Start or stop every bot in one category. */
+  /** Start / stop / restart every bot in one category. */
   const groupLifecycle = async (group, action) => {
     const targets = group.bots.filter((bot) =>
       action === 'start' ? bot.status !== 'running' : bot.status === 'running'
@@ -262,15 +473,68 @@ export default function BotsPage() {
       return;
     }
     setGroupBusy(`${group.name}:${action}`);
-    const results = await Promise.allSettled(
-      targets.map((bot) => api(`/bots/${encodeURIComponent(bot.id)}/${action}`, { method: 'POST' }))
-    );
-    const failed = results.filter((result) => result.status === 'rejected').length;
-    const completed = action === 'stop' ? 'stopped' : 'started';
-    setGroupBusy('');
-    if (failed) toast(`${targets.length - failed} of ${targets.length} ${completed} in ${group.name}`, 'warning');
-    else toast(`${targets.length} ${completed} in ${group.name}`, 'success');
-    fleet.reload();
+    try {
+      const result = await api('/bots/mass', {
+        method: 'POST',
+        body: JSON.stringify({ ids: targets.map((b) => b.id), action }),
+      });
+      const verb = action === 'start' ? 'started' : action === 'stop' ? 'stopped' : 'restarted';
+      toast(`${result.changed} of ${result.total} ${verb} in ${group.name}`, result.changed === result.total ? 'success' : 'warning');
+    } catch (reason) {
+      toast(reason.message, 'error');
+    } finally {
+      setGroupBusy('');
+      fleet.reload();
+    }
+  };
+
+  const broadcastCategory = (group) => {
+    openBroadcast({
+      scope: {
+        target: 'running',
+        includeCategories: [group.name],
+      },
+    });
+  };
+
+  const renameCategory = async (group, newName) => {
+    try {
+      const result = await api('/bots/mass', {
+        method: 'POST',
+        body: JSON.stringify({ ids: group.bots.map((b) => b.id), action: 'category', category: newName }),
+      });
+      toast(`"${group.name}" -> "${newName}" · ${result.changed} bot${result.changed === 1 ? '' : 's'} moved`, 'success');
+      fleet.reload();
+    } catch (reason) {
+      toast(reason.message, 'error');
+    }
+  };
+
+  const mergeCategory = async (group, targetName) => {
+    try {
+      const result = await api('/bots/mass', {
+        method: 'POST',
+        body: JSON.stringify({ ids: group.bots.map((b) => b.id), action: 'category', category: targetName }),
+      });
+      toast(`Merged ${result.changed} bot${result.changed === 1 ? '' : 's'} into "${targetName}"`, 'success');
+      fleet.reload();
+    } catch (reason) {
+      toast(reason.message, 'error');
+    }
+  };
+
+  const deleteCategory = async (group) => {
+    if (group.name === UNCATEGORIZED) return;
+    try {
+      const result = await api('/bots/mass', {
+        method: 'POST',
+        body: JSON.stringify({ ids: group.bots.map((b) => b.id), action: 'category', category: UNCATEGORIZED }),
+      });
+      toast(`"${group.name}" cleared -> ${result.changed} bot${result.changed === 1 ? '' : 's'} moved to ${UNCATEGORIZED}`, 'success');
+      fleet.reload();
+    } catch (reason) {
+      toast(reason.message, 'error');
+    }
   };
 
   const toggleBotCheck = (id, force) => {
@@ -336,27 +600,26 @@ export default function BotsPage() {
     }
   };
 
-  const massLifecycle = async (action) => {
+  /** Bulk lifecycle + category move through /api/bots/mass. */
+  const massAction = async (action, category = '') => {
     const ids = Array.from(checkedBots);
     if (!ids.length) return;
-    const targets = fleet.bots.filter(
-      (b) => ids.includes(b.id) && (action === 'start' ? b.status !== 'running' : b.status === 'running')
-    );
-    if (!targets.length) {
-      toast(`None of the selected bots need to be ${action}ed`, 'info');
+    if (action === 'category' && !category) {
+      toast('Pick a target category first', 'info');
       return;
     }
     setMassActionBusy(action);
     try {
-      const results = await Promise.allSettled(
-        targets.map((bot) => api(`/bots/${encodeURIComponent(bot.id)}/${action}`, { method: 'POST' }))
-      );
-      const failed = results.filter((r) => r.status === 'rejected').length;
-      const completed = action === 'stop' ? 'stopped' : 'started';
-      if (failed) {
-        toast(`${targets.length - failed} of ${targets.length} ${completed}`, 'warning');
+      const result = await api('/bots/mass', {
+        method: 'POST',
+        body: JSON.stringify({ ids, action, category }),
+      });
+      const verb = action === 'start' ? 'started' : action === 'stop' ? 'stopped' : action === 'restart' ? 'restarted' : `moved to "${category}"`;
+      if (action === 'category') {
+        toast(`${result.changed} of ${result.total} bots ${verb}`, 'success');
+        setMoveCategory('');
       } else {
-        toast(`${targets.length} bot${targets.length === 1 ? '' : 's'} ${completed}`, 'success');
+        toast(`${result.changed} of ${result.total} ${verb}`, result.changed === result.total ? 'success' : 'warning');
       }
       fleet.reload();
     } catch (reason) {
@@ -364,6 +627,17 @@ export default function BotsPage() {
     } finally {
       setMassActionBusy('');
     }
+  };
+
+  const broadcastSelection = () => {
+    const ids = Array.from(checkedBots);
+    if (!ids.length) return;
+    openBroadcast({
+      scope: {
+        target: 'all',
+        includeIds: ids,
+      },
+    });
   };
 
   const openCreateModal = () => {
@@ -477,27 +751,9 @@ export default function BotsPage() {
     }
   };
 
-  const broadcast = async () => {
-    const cmd = cast.cmd.trim();
-    if (!cmd) return;
-    setCasting(true);
-    try {
-      const staggerSec = Number(cast.staggerSec);
-      const staggerMs = Number.isFinite(staggerSec) ? Math.max(0, Math.round(staggerSec * 1000)) : 250;
-      const body = { cmd, staggerMs, staggerSec };
-      if (cast.botIds.length) body.botIds = cast.botIds;
-      const result = await api('/mass-cmd', { method: 'POST', body: JSON.stringify(body) });
-      toast(`Queued for ${result.total} bot${result.total === 1 ? '' : 's'}`, 'success');
-      setCastOpen(false);
-      setCast({ cmd: '', staggerSec: '0.25', botIds: [] });
-    } catch (reason) {
-      toast(reason.message, 'error');
-    } finally {
-      setCasting(false);
-    }
-  };
-
   const runningTotal = fleet.bots.filter((bot) => bot.status === 'running').length;
+  const offlineTotal = fleet.bots.length - runningTotal;
+  const totalShards = fleet.bots.reduce((sum, bot) => sum + (Number(bot.shards) || 0), 0);
   const proxyOptions = useMemo(
     () => withLiveProxyUsage(proxies.data || [], fleet.bots, !fleet.loading),
     [proxies.data, fleet.bots, fleet.loading]
@@ -509,25 +765,19 @@ export default function BotsPage() {
         eyebrow="Fleet"
         title="Bots"
         description={`${fleet.bots.length}${!isAdmin ? '/10' : ''} bot${fleet.bots.length === 1 ? '' : 's'} across ${
-          groups.length || 0
-        } categor${groups.length === 1 ? 'y' : 'ies'} · ${runningTotal} running${
+          allGroups.length || 0
+        } categor${allGroups.length === 1 ? 'y' : 'ies'} · ${runningTotal} running · ${totalShards.toLocaleString()} shards${
           atBotLimit ? ' · (10-bot limit reached)' : ''
         }`}
         actions={
           <>
             <LiveDot live={fleet.live} label="Fleet" />
-            {checkedBots.size ? (
-              <Button
-                variant="danger"
-                onClick={() => setMassDeleteOpen(true)}
-                className="gap-1.5"
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-                Delete {checkedBots.size}
-              </Button>
-            ) : null}
-            <Button variant="secondary" onClick={() => setCastOpen(true)} disabled={!runningTotal}>
-              <Send className="h-3.5 w-3.5" />
+            <Button variant="secondary" onClick={() => setCatManagerOpen(true)}>
+              <Layers className="h-3.5 w-3.5" />
+              Categories
+            </Button>
+            <Button variant="secondary" onClick={() => openBroadcast()}>
+              <Megaphone className="h-3.5 w-3.5" />
               Broadcast
             </Button>
             <Button
@@ -543,6 +793,88 @@ export default function BotsPage() {
       />
 
       {fleet.error ? <ErrorNote>{fleet.error}</ErrorNote> : null}
+
+      {/* ---- Fleet stat strip ---------------------------------------- */}
+      <div className="anim-fade grid grid-cols-2 gap-2.5 sm:grid-cols-3 xl:grid-cols-5">
+        {[
+          { label: 'Live now', value: fleet.loading ? '--' : String(runningTotal), hint: 'streaming to the fleet', icon: <Send className="h-4 w-4" />, live: true },
+          { label: 'Registered', value: fleet.loading ? '--' : String(fleet.bots.length), hint: !isAdmin ? 'of 10 quota' : 'across this plane', icon: <Bot className="h-4 w-4" /> },
+          { label: 'Offline', value: fleet.loading ? '--' : String(offlineTotal), hint: 'idle in the roster', icon: <Square className="h-4 w-4" /> },
+          { label: 'Shards', value: fleet.loading ? '--' : formatShards(totalShards) || '0', hint: 'across the whole fleet', icon: <Gem className="h-4 w-4" /> },
+          { label: 'Categories', value: fleet.loading ? '--' : String(allGroups.length), hint: `${allGroups.filter((g) => g.running > 0).length} active`, icon: <Layers className="h-4 w-4" /> },
+        ].map((stat) => (
+          <div
+            key={stat.label}
+            className="group relative overflow-hidden rounded-2xl border border-white/[0.08] bg-white/[0.025] p-3.5 backdrop-blur-xl transition-all duration-500 [transition-timing-function:var(--ease-ios)] hover:-translate-y-0.5 hover:border-white/20 hover:bg-white/[0.05]"
+          >
+            <span className="pointer-events-none absolute -right-6 -top-6 h-16 w-16 rounded-full bg-white/[0.07] blur-xl opacity-0 transition-opacity duration-700 group-hover:opacity-100" />
+            <div className="flex items-center justify-between">
+              <p className="text-[9px] font-semibold uppercase tracking-[0.15em] text-white/35">
+                <span className={cn('mr-1.5 inline-block h-1 w-1 rounded-full align-middle', stat.live ? 'bg-white shadow-[0_0_6px_rgba(255,255,255,.9)] anim-pulse' : 'bg-white/25')} />
+                {stat.label}
+              </p>
+              <span className="text-white/25 transition group-hover:text-white/60">{stat.icon}</span>
+            </div>
+            <p className="tnum mt-2 text-[26px] font-semibold leading-none tracking-[-0.04em] text-white">{stat.value}</p>
+            <p className="mt-1.5 text-[10px] text-white/30">{stat.hint}</p>
+          </div>
+        ))}
+      </div>
+
+      {/* ---- Category rail -------------------------------------------- */}
+      <div className="anim-fade flex items-center gap-2 overflow-x-auto pb-1">
+        <button
+          type="button"
+          onClick={() => setCategoryFilter('all')}
+          className={cn(
+            'inline-flex shrink-0 items-center gap-1.5 rounded-2xl border px-3 py-2 text-[11px] font-semibold transition-all duration-300 [transition-timing-function:var(--ease-ios)]',
+            categoryFilter === 'all'
+              ? 'border-white bg-white text-black shadow-[0_0_20px_-6px_rgba(255,255,255,.4)]'
+              : 'border-white/10 bg-white/[0.03] text-white/50 hover:border-white/25 hover:bg-white/[0.07] hover:text-white'
+          )}
+        >
+          All
+          <span className={cn('tnum rounded-md px-1.5 py-0.5 text-[10px] font-bold', categoryFilter === 'all' ? 'bg-black/10 text-black/60' : 'bg-white/[0.07] text-white/40')}>
+            {fleet.bots.length}
+          </span>
+        </button>
+        {allGroups.map((group) => (
+          <div key={group.name} className="group/chip relative shrink-0">
+            <button
+              type="button"
+              onClick={() => setCategoryFilter(categoryFilter === group.name ? 'all' : group.name)}
+              className={cn(
+                'flex items-center gap-1.5 rounded-2xl border px-3 py-2 text-[11px] font-semibold transition-all duration-300 [transition-timing-function:var(--ease-ios)]',
+                categoryFilter === group.name
+                  ? 'border-white bg-white text-black shadow-[0_0_20px_-6px_rgba(255,255,255,.4)]'
+                  : 'border-white/10 bg-white/[0.03] text-white/50 hover:border-white/25 hover:bg-white/[0.07] hover:text-white'
+              )}
+            >
+              <span className={cn('h-1.5 w-1.5 rounded-full', group.running ? 'bg-white shadow-[0_0_6px_rgba(255,255,255,.9)]' : 'bg-white/25')} />
+              <span className="max-w-[8rem] truncate">{group.name}</span>
+              <span className={cn('tnum rounded-md px-1.5 py-0.5 text-[10px] font-bold', categoryFilter === group.name ? 'bg-black/10 text-black/60' : 'bg-white/[0.07] text-white/40')}>
+                {group.running}/{group.bots.length}
+              </span>
+            </button>
+            <button
+              type="button"
+              title={`Broadcast to ${group.name}`}
+              onClick={() => broadcastCategory(group)}
+              className="absolute -right-1.5 -top-1.5 hidden h-5 w-5 items-center justify-center rounded-full border border-white/30 bg-black text-white shadow-md transition hover:bg-white hover:text-black group-hover/chip:flex"
+            >
+              <Megaphone className="h-2.5 w-2.5" />
+            </button>
+          </div>
+        ))}
+        <button
+          type="button"
+          onClick={() => setCatManagerOpen(true)}
+          className="chip-elevated shrink-0 px-3 py-2 text-[11px] font-medium"
+        >
+          <Layers className="h-3 w-3" />
+          Manage
+        </button>
+      </div>
 
       <div className="grid items-start gap-6 md:grid-cols-[19rem_minmax(0,1fr)] lg:grid-cols-[21rem_minmax(0,1fr)] xl:grid-cols-[22rem_minmax(0,1fr)]">
         {/* Mobile switcher: toggle between roster and workspace on small screens */}
@@ -589,15 +921,13 @@ export default function BotsPage() {
           {/* Sidebar Top Header */}
           <div className="flex items-center justify-between border-b border-white/[0.07] px-4 py-3">
             <div className="flex items-center gap-2">
-              <span className="text-[12px] font-semibold uppercase tracking-[0.14em] text-white/60">
-                Roster
-              </span>
+              <span className="text-[12px] font-semibold uppercase tracking-[0.14em] text-white/60">Roster</span>
               <span
                 title={!isAdmin ? `${fleet.bots.length} of 10 maximum bots used` : `${fleet.bots.length} bots registered`}
                 className={cn(
                   'rounded-full px-2 py-0.5 text-[10px] font-medium transition',
                   atBotLimit
-                    ? 'border border-amber-500/30 bg-amber-500/15 text-amber-300 font-semibold'
+                    ? 'border border-white/30 bg-white/[0.10] text-white font-semibold shadow-[0_0_14px_-4px_rgba(255,255,255,.4)]'
                     : 'bg-white/[0.08] text-white/50'
                 )}
               >
@@ -620,7 +950,7 @@ export default function BotsPage() {
                 className={cn(
                   'inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[11px] font-medium transition',
                   selectMode
-                    ? 'border-white/30 bg-white/[0.12] text-white shadow-sm'
+                    ? 'border-white bg-white text-black shadow-[0_0_14px_-4px_rgba(255,255,255,.5)]'
                     : 'border-white/10 bg-white/[0.05] text-white/70 hover:border-white/20 hover:bg-white/[0.10] hover:text-white'
                 )}
               >
@@ -634,7 +964,7 @@ export default function BotsPage() {
                 className={cn(
                   'inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[11px] font-medium transition',
                   atBotLimit
-                    ? 'border-amber-500/20 bg-amber-500/10 text-amber-300 hover:bg-amber-500/15'
+                    ? 'border-white/20 bg-white/[0.10] text-white hover:bg-white/[0.15]'
                     : 'border-white/10 bg-white/[0.05] text-white/70 hover:border-white/20 hover:bg-white/[0.10] hover:text-white'
                 )}
               >
@@ -682,9 +1012,7 @@ export default function BotsPage() {
                 )}
               >
                 <span>All</span>
-                <span className="tnum rounded-full bg-white/[0.06] px-1.5 py-0.5 text-[10px] text-white/50">
-                  {fleet.bots.length}
-                </span>
+                <span className="tnum rounded-full bg-white/[0.06] px-1.5 py-0.5 text-[10px] text-white/50">{fleet.bots.length}</span>
               </button>
               <button
                 type="button"
@@ -698,9 +1026,7 @@ export default function BotsPage() {
               >
                 <span className="h-1.5 w-1.5 rounded-full bg-white anim-pulse" />
                 <span>Live</span>
-                <span className="tnum rounded-full bg-white/[0.06] px-1.5 py-0.5 text-[10px] text-white/50">
-                  {runningTotal}
-                </span>
+                <span className="tnum rounded-full bg-white/[0.06] px-1.5 py-0.5 text-[10px] text-white/50">{runningTotal}</span>
               </button>
               <button
                 type="button"
@@ -713,10 +1039,24 @@ export default function BotsPage() {
                 )}
               >
                 <span>Off</span>
-                <span className="tnum rounded-full bg-white/[0.06] px-1.5 py-0.5 text-[10px] text-white/50">
-                  {fleet.bots.length - runningTotal}
-                </span>
+                <span className="tnum rounded-full bg-white/[0.06] px-1.5 py-0.5 text-[10px] text-white/50">{offlineTotal}</span>
               </button>
+            </div>
+
+            {/* Sort */}
+            <div className="flex items-center gap-1.5">
+              <span className="text-[10px] uppercase tracking-[0.13em] text-white/30">Sort</span>
+              <Select
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value)}
+                className="h-8 min-h-0 py-0 text-[11px]"
+                aria-label="Sort roster"
+              >
+                <option value="name">Name</option>
+                <option value="id">Bot ID</option>
+                <option value="status">Status</option>
+                <option value="shards">Shards</option>
+              </Select>
             </div>
           </div>
 
@@ -796,21 +1136,38 @@ export default function BotsPage() {
                     <span className="flex shrink-0 items-center gap-0.5">
                       <button
                         type="button"
+                        title={`Broadcast to ${group.name}`}
+                        disabled={Boolean(groupBusy)}
+                        onClick={() => broadcastCategory(group)}
+                        className="rounded-md p-1.5 text-white/35 transition hover:bg-white/[0.08] hover:text-white disabled:opacity-30"
+                      >
+                        <Megaphone className="h-3 w-3" />
+                      </button>
+                      <button
+                        type="button"
                         title={`Start all in ${group.name}`}
-                        disabled={groupBusy === `${group.name}:start`}
+                        disabled={groupBusy.startsWith(`${group.name}:`) && !groupBusy.endsWith('start')}
                         onClick={() => groupLifecycle(group, 'start')}
                         className="rounded-md p-1.5 text-white/30 transition hover:bg-white/[0.08] hover:text-white disabled:opacity-30"
                       >
-                        <Play className="h-3 w-3" />
+                        {groupBusy === `${group.name}:start` ? <RefreshCw className="h-3 w-3 anim-spin" /> : <Play className="h-3 w-3" />}
                       </button>
                       <button
                         type="button"
                         title={`Stop all in ${group.name}`}
-                        disabled={groupBusy === `${group.name}:stop`}
+                        disabled={groupBusy.startsWith(`${group.name}:`) && !groupBusy.endsWith('stop')}
                         onClick={() => groupLifecycle(group, 'stop')}
                         className="rounded-md p-1.5 text-white/30 transition hover:bg-white/[0.08] hover:text-white disabled:opacity-30"
                       >
-                        <Square className="h-3 w-3" />
+                        {groupBusy === `${group.name}:stop` ? <RefreshCw className="h-3 w-3 anim-spin" /> : <Square className="h-3 w-3" />}
+                      </button>
+                      <button
+                        type="button"
+                        title="Category actions"
+                        onClick={() => setCatManagerOpen(true)}
+                        className="rounded-md p-1.5 text-white/30 transition hover:bg-white/[0.08] hover:text-white"
+                      >
+                        <MoreHorizontal className="h-3 w-3" />
                       </button>
                     </span>
                   </div>
@@ -876,7 +1233,7 @@ export default function BotsPage() {
                                 className={cn(
                                   'h-2 w-2 shrink-0 rounded-full transition',
                                   isRunning
-                                    ? 'bg-emerald-400 anim-pulse shadow-[0_0_8px_rgba(52,211,153,0.8)]'
+                                    ? 'bg-white anim-pulse shadow-[0_0_8px_rgba(255,255,255,0.9)]'
                                     : 'bg-white/20'
                                 )}
                               />
@@ -893,9 +1250,9 @@ export default function BotsPage() {
                               {bot.shards !== null && bot.shards !== undefined ? (
                                 <span
                                   title={`${Number(bot.shards).toLocaleString()} shards`}
-                                  className="tnum inline-flex shrink-0 items-center gap-1 rounded-md border border-amber-400/25 bg-amber-400/10 px-1.5 py-0.5 text-[11px] font-semibold text-amber-300 shadow-[0_0_8px_rgba(251,191,36,0.12)]"
+                                  className="tnum inline-flex shrink-0 items-center gap-1 rounded-md border border-white/20 bg-white/[0.07] px-1.5 py-0.5 text-[11px] font-semibold text-white/80 shadow-[0_0_10px_rgba(255,255,255,0.12)]"
                                 >
-                                  <Gem className="h-2.5 w-2.5 text-amber-400" />
+                                  <Gem className="h-2.5 w-2.5 text-white/60" />
                                   <span>{formatShards(bot.shards)}</span>
                                 </span>
                               ) : isRunning ? (
@@ -905,6 +1262,25 @@ export default function BotsPage() {
                                 >
                                   <Gem className="h-2.5 w-2.5 opacity-40" />
                                   <span>--</span>
+                                </span>
+                              ) : null}
+
+                              {/* Hover quick lifecycle */}
+                              {!selectMode ? (
+                                <span className="hidden shrink-0 items-center gap-0.5 group-hover:flex">
+                                  <button
+                                    type="button"
+                                    title={isRunning ? `Stop ${bot.id}` : `Start ${bot.id}`}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      api(`/bots/${encodeURIComponent(bot.id)}/${isRunning ? 'stop' : 'start'}`, { method: 'POST' })
+                                        .then(() => fleet.reload())
+                                        .catch((r) => toast(r.message, 'error'));
+                                    }}
+                                    className="rounded-md p-1 text-white/40 transition hover:bg-white/[0.1] hover:text-white"
+                                  >
+                                    {isRunning ? <Square className="h-3 w-3" /> : <Play className="h-3 w-3" />}
+                                  </button>
                                 </span>
                               ) : null}
                             </div>
@@ -936,14 +1312,15 @@ export default function BotsPage() {
                   Deselect all
                 </button>
               </div>
-              <div className="flex items-center gap-1.5">
+
+              <div className="grid grid-cols-2 gap-1.5">
                 <Button
                   variant="secondary"
                   size="sm"
                   loading={massActionBusy === 'start'}
-                  onClick={() => massLifecycle('start')}
+                  onClick={() => massAction('start')}
                   title="Start selected bots"
-                  className="flex-1 text-xs"
+                  className="text-xs"
                 >
                   <Play className="h-3 w-3" />
                   Start
@@ -952,24 +1329,75 @@ export default function BotsPage() {
                   variant="secondary"
                   size="sm"
                   loading={massActionBusy === 'stop'}
-                  onClick={() => massLifecycle('stop')}
+                  onClick={() => massAction('stop')}
                   title="Stop selected bots"
-                  className="flex-1 text-xs"
+                  className="text-xs"
                 >
                   <Square className="h-3 w-3" />
                   Stop
                 </Button>
                 <Button
-                  variant="danger"
+                  variant="secondary"
                   size="sm"
-                  onClick={() => setMassDeleteOpen(true)}
-                  title="Delete selected bots"
-                  className="flex-1 text-xs"
+                  loading={massActionBusy === 'restart'}
+                  onClick={() => massAction('restart')}
+                  title="Restart selected bots"
+                  className="text-xs"
                 >
-                  <Trash2 className="h-3 w-3" />
-                  Delete
+                  <RefreshCw className="h-3 w-3" />
+                  Restart
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={broadcastSelection}
+                  title="Broadcast to the selected bots via the Command Deck"
+                  className="text-xs"
+                >
+                  <Megaphone className="h-3 w-3" />
+                  Cast
                 </Button>
               </div>
+
+              {/* Move to category */}
+              <div className="mt-1.5 flex items-center gap-1.5">
+                <Select
+                  value={moveCategory}
+                  onChange={(e) => setMoveCategory(e.target.value)}
+                  className="h-8 min-h-0 flex-1 py-0 text-[11px]"
+                  aria-label="Target category"
+                >
+                  <option value="">Move to category…</option>
+                  {allGroups.map((g) => (
+                    <option key={g.name} value={g.name}>{g.name}</option>
+                  ))}
+                  {!allGroups.some((g) => g.name === UNCATEGORIZED) ? (
+                    <option value={UNCATEGORIZED}>{UNCATEGORIZED}</option>
+                  ) : null}
+                </Select>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  disabled={!moveCategory}
+                  loading={massActionBusy === 'category'}
+                  onClick={() => massAction('category', moveCategory)}
+                  className="shrink-0 text-xs"
+                >
+                  <FolderInput className="h-3 w-3" />
+                  Move
+                </Button>
+              </div>
+
+              <Button
+                variant="danger"
+                size="sm"
+                onClick={() => setMassDeleteOpen(true)}
+                title="Delete selected bots"
+                className="mt-1.5 w-full text-xs"
+              >
+                <Trash2 className="h-3 w-3" />
+                Delete {checkedBots.size}
+              </Button>
             </div>
           ) : (
             <div className="flex items-center justify-between border-t border-white/[0.07] px-4 py-2.5 text-[11px] text-white/40">
@@ -979,12 +1407,12 @@ export default function BotsPage() {
               </span>
               <button
                 type="button"
-                onClick={() => setCastOpen(true)}
-                disabled={!runningTotal}
-                className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] text-white/50 transition hover:bg-white/[0.06] hover:text-white disabled:opacity-30 disabled:pointer-events-none"
+                onClick={() => openBroadcast()}
+                title="Open command deck"
+                className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] text-white/50 transition hover:bg-white/[0.06] hover:text-white"
               >
-                <Send className="h-3 w-3" />
-                <span>Broadcast</span>
+                <Megaphone className="h-3 w-3" />
+                <span>Cast</span>
               </button>
             </div>
           )}
@@ -1027,6 +1455,22 @@ export default function BotsPage() {
         </div>
       </div>
 
+      {/* Category manager */}
+      <CategoryManagerModal
+        open={catManagerOpen}
+        onClose={() => setCatManagerOpen(false)}
+        groups={allGroups}
+        busy={groupBusy}
+        onLifecycle={groupLifecycle}
+        onRename={renameCategory}
+        onMerge={mergeCategory}
+        onDelete={deleteCategory}
+        onCast={(group) => {
+          setCatManagerOpen(false);
+          broadcastCategory(group);
+        }}
+      />
+
       {/* Mass Delete Confirmation Modal */}
       <ConfirmModal
         open={massDeleteOpen}
@@ -1060,7 +1504,7 @@ export default function BotsPage() {
       >
         <div className="space-y-4">
           {atBotLimit ? (
-            <div className="flex items-center gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-200">
+            <div className="flex items-center gap-2 rounded-xl border border-white/25 bg-white/[0.08] p-3 text-xs text-white">
               <span>
                 <strong>Account Limit Reached:</strong> Standard accounts can register a maximum of 10 bots ({fleet.bots.length}/10 used). Delete an existing bot to create a new one.
               </span>
@@ -1294,62 +1738,6 @@ export default function BotsPage() {
               />
             </Field>
           </div>
-        </div>
-      </Modal>
-
-      {/* Broadcast */}
-      <Modal
-        open={castOpen}
-        onClose={() => setCastOpen(false)}
-        title="Broadcast command"
-        description="Sent to running bots only. Alias names are expanded server-side."
-        footer={
-          <>
-            <Button variant="ghost" onClick={() => setCastOpen(false)}>
-              Cancel
-            </Button>
-            <Button loading={casting} disabled={!cast.cmd.trim()} onClick={broadcast}>
-              <Send className="h-3.5 w-3.5" />
-              Send
-            </Button>
-          </>
-        }
-      >
-        <div className="space-y-4">
-          <Field label="Command" hint="Chat text or a slash command, exactly as a player would type it.">
-            <Input
-              value={cast.cmd}
-              onChange={(event) => setCast({ ...cast, cmd: event.target.value })}
-              placeholder="!stats"
-              className="font-mono"
-            />
-          </Field>
-          <Field label="Stagger (seconds)" hint="Delay in seconds between bots (e.g. 0.25s or 1s) to avoid server rate limits.">
-            <Input
-              type="number"
-              min="0"
-              max="300"
-              step="0.05"
-              value={cast.staggerSec}
-              onChange={(event) => setCast({ ...cast, staggerSec: event.target.value })}
-              placeholder="0.25"
-            />
-          </Field>
-          <div>
-            <span className="field-label">Targets</span>
-            <p className="mb-2 text-[11px] text-white/30">Leave empty to hit every running bot you can see.</p>
-            <BotPicker
-              bots={fleet.bots.filter((bot) => bot.status === 'running')}
-              value={cast.botIds}
-              onChange={(botIds) => setCast({ ...cast, botIds })}
-              emptyLabel="No bots are running right now."
-            />
-          </div>
-          {cast.botIds.length ? (
-            <Pill tone="strong">
-              {cast.botIds.length} target{cast.botIds.length === 1 ? '' : 's'}
-            </Pill>
-          ) : null}
         </div>
       </Modal>
     </div>

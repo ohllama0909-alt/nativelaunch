@@ -64,12 +64,12 @@ async function runJobLoop(job, ids, staggerMs) {
     try {
         for (let i = 0; i < ids.length; i++) {
             const id = ids[i];
-            const alive = liveState.bots.some(b => b.id === id);
-            if (!alive) { job.skipped++; }
-            else {
-                const r = sendCommand(id, job.cmd);
-                if (r.ok) job.ok++;
-            }
+            // sendCommand is the source of truth: a registered bot that is not
+            // running (or no longer exists) counts as skipped, never silently
+            // dropped from the stats.
+            const r = sendCommand(id, job.cmd);
+            if (r.ok) job.ok++;
+            else job.skipped++;
             job.done = Math.min(job.total, job.done + 1);
             job.pos = i + 1;
             broadcastGlobal(viewer => {
@@ -95,6 +95,78 @@ async function runJobLoop(job, ids, staggerMs) {
             return { type: 'job', job: { ...job } };
         });
     }
+}
+
+// ─── Broadcast targeting ────────────────────────────────────────────────
+// A broadcast scope can hit every bot, every running bot, a set of
+// categories, or an explicit id list, and can exclude categories or ids.
+// Tenants can only ever target bots they may manage; offline targets are
+// counted as skipped by the job loop rather than dropped at dispatch time.
+function cleanScope(value) {
+    const list = (v) => Array.isArray(v)
+        ? [...new Set(v.map(s => String(s).trim()).filter(Boolean))]
+        : [];
+    return {
+        target: value && value.target === 'all' ? 'all' : 'running',
+        includeCategories: list(value && value.includeCategories),
+        excludeCategories: list(value && value.excludeCategories),
+        includeIds: list(value && (value.includeIds || value.botIds)),
+        excludeIds: list(value && value.excludeIds),
+    };
+}
+
+function resolveBroadcastTargets(user, scope) {
+    const incCats = new Set(scope.includeCategories);
+    const excCats = new Set(scope.excludeCategories);
+    const incIds = new Set(scope.includeIds);
+    const excIds = new Set(scope.excludeIds);
+    const out = [];
+    for (const bot of (liveState && liveState.bots) || []) {
+        if (!users.canManageBot(user, bot)) continue;
+        const cat = String((bot.config && bot.config.category) || 'Uncategorized');
+        if (incCats.size && !incCats.has(cat)) continue;
+        if (excCats.has(cat)) continue;
+        if (incIds.size && !incIds.has(bot.id)) continue;
+        if (excIds.has(bot.id)) continue;
+        if (scope.target === 'running' && !getBotState(bot.id).proc) continue;
+        out.push(bot);
+    }
+    return out;
+}
+
+// Create + persist + start a broadcast job from a scope spec. Shared by the
+// broadcast route and the history re-run action so both get identical
+// permission checks and job accounting.
+function startBroadcastJob(user, spec) {
+    const scope = cleanScope(spec.scope || {});
+    const targets = resolveBroadcastTargets(user, scope);
+    if (!targets.length) return { error: 'No targets match that scope (nothing running or selected)' };
+    const staggerMs = Number.isFinite(spec.staggerMs) ? Math.max(0, Math.min(300000, Math.round(spec.staggerMs))) : 0;
+    const cmd = String(spec.cmd || '').trim();
+    const job = {
+        id: 'job_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+        ownerId: user.id,
+        ownerLabel: user.email,
+        cmd,
+        scope,
+        botIds: targets.map(b => b.id),
+        total: targets.length,
+        done: 0, ok: 0, skipped: 0, pos: 0,
+        staggerMs,
+        status: 'running',
+        next: null,
+        nextAt: null,
+        createdAt: new Date().toISOString()
+    };
+    jobs.unshift(job);
+    if (jobs.length > MAX_JOBS) jobs.length = MAX_JOBS;
+    persistJobs();
+    broadcastGlobal(viewer => {
+        if (viewer && viewer.role !== 'admin' && job.ownerId !== viewer.id) return null;
+        return { type: 'job', job: { ...job } };
+    });
+    runJobLoop(job, job.botIds, staggerMs);
+    return { job };
 }
 
 // Re-attach to any run that was mid-flight when the panel stopped, and retire
@@ -1166,10 +1238,11 @@ async function handleHttp(req, res, state) {
     }
 
     // Mass command: send one command to many bots, optionally staggered.
-    // body: { cmd, target?: 'running' | 'all', delaySeconds?: number,
-    //         excludeCategories?: string[], includeCategories?: string[] }
-    // (default 'running')
-        if (req.method === 'POST' && p === '/api/mass-cmd') {
+    // body: { cmd, target?: 'running' | 'all', staggerSec?: number,
+    //         includeCategories?: string[], excludeCategories?: string[],
+    //         botIds?: string[], includeIds?: string[], excludeIds?: string[] }
+    // (default target 'running' — offline bots are skipped by the job loop)
+    if (req.method === 'POST' && p === '/api/mass-cmd') {
         const user = currentUser(req);
         const body = await readJson(req);
         let cmd = String(body.cmd || '').trim();
@@ -1187,44 +1260,9 @@ async function handleHttp(req, res, state) {
         if (!Number.isFinite(staggerMs) || staggerMs < 0 || staggerMs > 300000) {
             return json(res, 400, { ok: false, reason: 'stagger must be between 0 and 300 seconds' });
         }
-        const includeIds = Array.isArray(body.botIds) && body.botIds.length > 0
-            ? new Set(body.botIds.map(s => String(s).trim()))
-            : null;
-        const targets = [];
-        for (const bot of state.bots) {
-            if (!users.canManageBot(user, bot)) continue;
-            if (includeIds && !includeIds.has(bot.id)) continue;
-            if (!getBotState(bot.id).proc) continue; // running bots only
-            targets.push(bot);
-        }
-        if (!targets.length) {
-            return json(res, 400, { ok: false, reason: 'No targets (nothing running or selected)' });
-        }
-
-        const job = {
-            id: 'job_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
-            ownerId: user.id,
-            ownerLabel: user.email,
-            cmd,
-            botIds: targets.map(b => b.id),
-            total: targets.length,
-            done: 0, ok: 0, skipped: 0, pos: 0,
-            staggerMs,
-            status: 'running',
-            next: targets.length > 1 ? null : null,
-            nextAt: null,
-            createdAt: new Date().toISOString()
-        };
-        jobs.unshift(job);
-        if (jobs.length > MAX_JOBS) jobs.length = MAX_JOBS;
-        persistJobs();
-        broadcastGlobal(viewer => {
-            if (viewer && viewer.role !== 'admin' && job.ownerId !== viewer.id) return null;
-            return { type: 'job', job: { ...job } };
-        });
-        runJobLoop(job, job.botIds, staggerMs);
-
-        return json(res, 202, { ok: true, jobId: job.id, total: job.total, job });
+        const result = startBroadcastJob(user, { cmd, staggerMs, scope: body });
+        if (result.error) return json(res, 400, { ok: false, reason: result.error });
+        return json(res, 202, { ok: true, jobId: result.job.id, total: result.job.total, job: result.job });
     }
 
     // Job history (mass commands). Sent to the panel so it can re-attach to a
@@ -1233,6 +1271,26 @@ async function handleHttp(req, res, state) {
         const user = currentUser(req);
         const visible = user.role === 'admin' ? jobs : jobs.filter(job => job.ownerId === user.id);
         return json(res, 200, { ok: true, jobs: visible });
+    }
+
+    // Re-run a past broadcast against the *current* fleet. The stored scope
+    // is re-evaluated, so newly added bots are picked up and removed ones are
+    // not.
+    const jobRoute = p.match(/^\/api\/jobs\/([A-Za-z0-9_-]+)\/rerun$/);
+    if (jobRoute && req.method === 'POST') {
+        const user = currentUser(req);
+        const source = jobs.find(j => j.id === jobRoute[1]);
+        if (!source || (user.role !== 'admin' && source.ownerId !== user.id)) {
+            return json(res, 404, { ok: false, reason: 'Job not found' });
+        }
+        if (!source.cmd) return json(res, 400, { ok: false, reason: 'This job has no command to repeat' });
+        const result = startBroadcastJob(user, {
+            cmd: source.cmd,
+            staggerMs: source.staggerMs || 0,
+            scope: source.scope || { target: 'running', botIds: source.botIds || [] },
+        });
+        if (result.error) return json(res, 400, { ok: false, reason: result.error });
+        return json(res, 202, { ok: true, jobId: result.job.id, total: result.job.total, job: result.job });
     }
 
     // Lifecycle schedules. Each account may schedule only bots it can manage;
@@ -1665,6 +1723,60 @@ async function handleHttp(req, res, state) {
             saveBotsFile(state);
         }
         return json(res, 200, { ok: true, removed, ids: removedBots });
+    }
+
+    // Bulk bot actions: category moves and lifecycle in one round trip, with
+    // per-bot permission checks and single-shot persistence.
+    // body: { ids: string[], action: 'category'|'start'|'stop'|'restart', category?: string }
+    if (req.method === 'POST' && p === '/api/bots/mass') {
+        const user = currentUser(req);
+        const body = await readJson(req);
+        const ids = [...new Set((Array.isArray(body.ids) ? body.ids : []).map(s => String(s).trim()).filter(Boolean))];
+        if (!ids.length || ids.length > 500) {
+            return json(res, 400, { ok: false, reason: 'Choose between 1 and 500 bots' });
+        }
+        const action = String(body.action || '').trim().toLowerCase();
+        if (!['category', 'start', 'stop', 'restart'].includes(action)) {
+            return json(res, 400, { ok: false, reason: 'Action must be category, start, stop, or restart' });
+        }
+        const allowed = new Set(users.filterBots(user, state.bots).map(b => b.id));
+        const unauthorized = ids.filter(id => !allowed.has(id));
+        if (unauthorized.length) {
+            return json(res, 403, { ok: false, reason: `No access to: ${unauthorized.join(', ')}` });
+        }
+        const targets = state.bots.filter(b => ids.includes(b.id));
+        const results = [];
+        let changed = 0;
+
+        if (action === 'category') {
+            const category = String(body.category || '').trim() || 'Uncategorized';
+            for (const bot of targets) {
+                if (String(bot.config.category || 'Uncategorized') !== category) {
+                    bot.config.category = category;
+                    changed++;
+                }
+                broadcastGlobal(viewer => ({ type: 'bot-updated', bot: publicBot(bot, viewer) }), state);
+                results.push({ id: bot.id, ok: true });
+            }
+            if (changed) saveBotsFile(state);
+        } else if (action === 'restart') {
+            for (const bot of targets) {
+                const r = stopBot(bot.id);
+                if (r.ok) {
+                    setTimeout(() => startBot(state, bot), 2500);
+                    changed++;
+                }
+                results.push({ id: bot.id, ok: r.ok, reason: r.reason });
+            }
+        } else {
+            for (const bot of targets) {
+                const r = action === 'start' ? startBot(state, bot) : stopBot(bot.id);
+                if (r.ok) changed++;
+                results.push({ id: bot.id, ok: r.ok, reason: r.reason });
+            }
+        }
+
+        return json(res, 200, { ok: true, action, changed, total: targets.length, results });
     }
 
     const m = p.match(/^\/api\/bots\/([a-zA-Z0-9_-]+)(?:\/(.+))?$/);

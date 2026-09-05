@@ -11,14 +11,30 @@ authorization, bot processes, tenant data, and live SSE streams.
 ## Frontend routes
 
 - `/overview` — fleet and service summary
-- `/bots` — lifecycle, console, configuration, inventory, modules, and bot scripts
+- `/bots` — lifecycle, console, configuration, inventory, modules, bot scripts,
+  category management, and bulk actions (start / stop / restart / move to
+  category / broadcast / delete)
 - `/network` — private proxy pool and assignments
 - `/aliases` — per-account command shortcuts
 - `/scripts` — reusable tenant script library
 - `/schedules` — persistent lifecycle schedules
-- `/activity` — mass-command job history
+- `/activity` — mass-command job history with one-click re-run
 - `/users` — administrator-only tenant management
 - `/settings` — account security and preferences
+
+## Command Deck
+
+An always-on floating dock (bottom-right, `Ctrl/⌘+K` to summon) available on
+every dashboard page. It is a live fleet pulse, a broadcast progress bar, and
+the full broadcast composer: category-wise include/exclude targeting,
+per-bot exclusions, running/all modes, stagger, saved presets, and recent
+commands — no modal required. Page actions (category chips, group headers,
+multi-select) open it preconfigured.
+
+Broadcast jobs are category-aware server-side
+(`includeCategories` / `excludeCategories` / `includeIds` / `excludeIds` /
+`target: running|all`); offline targets are counted as skipped. Bulk category
+moves and lifecycle use `POST /api/bots/mass`.
 
 ## Start
 
